@@ -20,6 +20,9 @@ final class MicProbeEngine {
         void onSnapshot(Snapshot snapshot);
         void onPcmChunk(short[] samples, int sampleRate);
         void onVoiceActivity(boolean speaking);
+        void onStreamTurnStart(int sampleRate);
+        void onPcmStream(short[] samples, int sampleRate);
+        void onStreamTurnEnd();
     }
 
     static final class Snapshot {
@@ -251,12 +254,17 @@ final class MicProbeEngine {
                         consecutiveSilenceFrames = 0;
                         voicedFramesInSegment = consecutiveVoiceFrames;
                         segment.clear();
-                        for (short[] old : preRoll) segment.append(old, old.length);
+                        listener.onStreamTurnStart(SAMPLE_RATE);
+                        for (short[] old : preRoll) {
+                            segment.append(old, old.length);
+                            listener.onPcmStream(old, SAMPLE_RATE);
+                        }
                         preRoll.clear();
                         emitVoice(true);
                     }
                 } else {
                     segment.append(frameCopy, frameCopy.length);
+                    listener.onPcmStream(frameCopy, SAMPLE_RATE);
                     if (voiced) {
                         consecutiveSilenceFrames = 0;
                         voicedFramesInSegment++;
@@ -278,6 +286,7 @@ final class MicProbeEngine {
                             FRAME_SAMPLES,
                             MIN_SEGMENT_SAMPLES)) {
                         emitSegment(segment, voicedFramesInSegment);
+                        listener.onStreamTurnEnd();
                         segment.clear();
                         speaking = false;
                         consecutiveVoiceFrames = 0;
@@ -303,7 +312,10 @@ final class MicProbeEngine {
         if (segment.size() >= MIN_SEGMENT_SAMPLES && voicedFramesInSegment >= 4) {
             emitSegment(segment, voicedFramesInSegment);
         }
-        if (speaking) emitVoice(false);
+        if (speaking) {
+            listener.onStreamTurnEnd();
+            emitVoice(false);
+        }
     }
 
     private void emitSegment(ShortAccumulator segment, int voicedFrames) {
