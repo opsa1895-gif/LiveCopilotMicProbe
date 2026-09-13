@@ -36,6 +36,8 @@ final class RealtimeTranscriptionClient {
     private static final int REALTIME_SAMPLE_RATE = 24_000;
     private static final int MIN_COMMIT_SAMPLES = REALTIME_SAMPLE_RATE / 10; // 100 ms
     private static final int MAX_BACKUP_SAMPLES = 16_000 * 12; // bounded ~12 s at capture rate
+    private static final int STT_CONTEXT_TURNS = 4;
+    private static final long STT_CONTEXT_IDLE_RESET_MS = 45_000L;
     private static final long COMMIT_TIMEOUT_MS = 9_000L;
 
     private final Context context;
@@ -46,6 +48,7 @@ final class RealtimeTranscriptionClient {
     private final StreamingAudioPreprocessor streamingPreprocessor = new StreamingAudioPreprocessor();
     private final PcmTurnBuffer activeBackup = new PcmTurnBuffer(MAX_BACKUP_SAMPLES);
     private final PcmTurnBuffer pendingBackup = new PcmTurnBuffer(MAX_BACKUP_SAMPLES);
+    private final SttContextWindow contextWindow = new SttContextWindow(STT_CONTEXT_TURNS, STT_CONTEXT_IDLE_RESET_MS);
 
     private WebSocket socket;
     private boolean wanted;
@@ -194,6 +197,7 @@ final class RealtimeTranscriptionClient {
         stop();
         scheduler.shutdownNow();
         fallbackExecutor.shutdownNow();
+        contextWindow.clear();
         try { httpClient.dispatcher().executorService().shutdown(); } catch (Throwable ignored) {}
         try { httpClient.connectionPool().evictAll(); } catch (Throwable ignored) {}
     }
@@ -247,7 +251,7 @@ final class RealtimeTranscriptionClient {
             String delta = event.optString("delta", "");
             String snapshot;
             synchronized (this) {
-                if (ws != socket || !awaitingCompletion || delta.isEmpty()) return;
+                if (ws != socket || (!turnActive && !awaitingCompletion) || delta.isEmpty()) return;
                 partial.append(delta);
                 snapshot = partial.toString();
             }
@@ -270,8 +274,12 @@ final class RealtimeTranscriptionClient {
                     fallbackGeneration = generation;
                 }
             }
-            if (!transcript.isEmpty()) listener.onFinal(turn, transcript);
-            else recoverCommittedTurn(turn, fallbackGeneration, "empty");
+            if (!transcript.isEmpty()) {
+                rememberTranscript(transcript);
+                listener.onFinal(turn, transcript);
+            } else {
+                recoverCommittedTurn(turn, fallbackGeneration, "empty");
+            }
             return;
         }
 
@@ -376,6 +384,7 @@ final class RealtimeTranscriptionClient {
             if (!deliver) return;
 
             if (!transcript.isEmpty()) {
+                rememberTranscript(transcript);
                 listener.onFinal(turn, transcript);
             } else {
                 listener.onState("fallback_failed");
@@ -411,21 +420,55 @@ final class RealtimeTranscriptionClient {
     }
 
     private String fallbackPrompt() {
-        StringBuilder out = new StringBuilder(
-                "Български TikTok Live разговор. Транскрибирай точно бърза разговорна реч, имена, числа и кратки въпроси. Не измисляй несигурни думи."
-        );
+        return buildTranscriptionPrompt(true);
+    }
+
+    private String realtimePrompt() {
+        return buildTranscriptionPrompt(false);
+    }
+
+    private String buildTranscriptionPrompt(boolean fileFallback) {
+        StringBuilder out = new StringBuilder(fileFallback
+                ? "Български TikTok Live разговор. Транскрибирай точно бърза разговорна реч, имена, числа и кратки въпроси. Не измисляй несигурни думи."
+                : "Български TikTok Live разговор. Разпознавай точно бърза разговорна реч, имена, числа и кратки въпроси. Не измисляй несигурни думи.");
+
         List<String> keywords = keywordHints();
         if (!keywords.isEmpty()) {
             out.append(" Възможни имена и термини: ");
             for (int i = 0; i < keywords.size(); i++) {
                 if (i > 0) out.append(", ");
                 out.append(keywords.get(i));
-                if (out.length() >= 600) break;
+                if (out.length() >= 430) break;
             }
             out.append('.');
         }
+
+        List<String> recent = contextWindow.snapshot(System.currentTimeMillis());
+        if (!recent.isEmpty()) {
+            out.append(" Предишен контекст: ");
+            for (int i = 0; i < recent.size(); i++) {
+                if (i > 0) out.append(" | ");
+                out.append(recent.get(i));
+                if (out.length() >= 640) break;
+            }
+            out.append('.');
+        }
+
         if (out.length() > 650) return out.substring(0, 650);
         return out.toString();
+    }
+
+    private void rememberTranscript(String transcript) {
+        contextWindow.add(transcript, System.currentTimeMillis());
+
+        WebSocket ws;
+        JSONObject update;
+        synchronized (this) {
+            if (!ready || socket == null || turnActive || awaitingCompletion || closed || !wanted) return;
+            ws = socket;
+            update = sessionUpdate();
+        }
+        try { ws.send(update.toString()); } catch (Throwable ignored) {}
     }
 
     private synchronized void scheduleReconnect() {
@@ -454,7 +497,7 @@ final class RealtimeTranscriptionClient {
             format.put("type", "audio/pcm");
             format.put("rate", REALTIME_SAMPLE_RATE);
             transcription.put("model", "gpt-live-transcribe");
-            transcription.put("prompt", "Български TikTok Live разговор. Разпознавай точно бърза разговорна реч, имена, числа и кратки въпроси.");
+            transcription.put("prompt", realtimePrompt());
             transcription.put("languages", new JSONArray().put("bg"));
             transcription.put("delay", "low");
 
