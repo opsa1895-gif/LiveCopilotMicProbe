@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.13.0-vad-hysteresis"
+        versionCode = 14
+        versionName = "0.14.0-latency-debug"
     }
 
     compileOptions {
