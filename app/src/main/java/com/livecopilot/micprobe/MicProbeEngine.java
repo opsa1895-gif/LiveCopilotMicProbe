@@ -11,6 +11,7 @@ import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.SystemClock;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -18,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class MicProbeEngine {
     interface Listener {
         void onSnapshot(Snapshot snapshot);
+        void onPcmChunk(short[] samples, int sampleRate);
     }
 
     static final class Snapshot {
@@ -35,6 +37,9 @@ final class MicProbeEngine {
             this.status = status;
         }
     }
+
+    private static final int SAMPLE_RATE = 16_000;
+    private static final int AI_CHUNK_SECONDS = 4;
 
     private final Context context;
     private final Listener listener;
@@ -62,9 +67,7 @@ final class MicProbeEngine {
     }
 
     void markTikTokSeen() {
-        if (running.get()) {
-            tiktokSeen = true;
-        }
+        if (running.get()) tiktokSeen = true;
     }
 
     void start() {
@@ -83,9 +86,8 @@ final class MicProbeEngine {
         tiktokSeen = false;
         finalStatus = "starting";
 
-        final int sampleRate = 16_000;
         final int minBuffer = AudioRecord.getMinBufferSize(
-                sampleRate,
+                SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
         );
@@ -100,7 +102,7 @@ final class MicProbeEngine {
         try {
             AudioFormat format = new AudioFormat.Builder()
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(sampleRate)
+                    .setSampleRate(SAMPLE_RATE)
                     .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
                     .build();
 
@@ -109,11 +111,7 @@ final class MicProbeEngine {
                     .setAudioFormat(format)
                     .setBufferSizeInBytes(bufferBytes);
 
-            if (Build.VERSION.SDK_INT >= 30) {
-                // Explicitly allow concurrent capture on our side. This cannot override
-                // another app marking ITS capture as privacy-sensitive.
-                builder.setPrivacySensitive(false);
-            }
+            if (Build.VERSION.SDK_INT >= 30) builder.setPrivacySensitive(false);
 
             recorder = builder.build();
             if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
@@ -128,9 +126,7 @@ final class MicProbeEngine {
                     AudioRecord r = recorder;
                     if (r == null || !running.get()) return;
                     AudioRecordingConfiguration cfg = r.getActiveRecordingConfiguration();
-                    if (cfg != null) {
-                        updateSilenceState(cfg.isClientSilenced());
-                    }
+                    if (cfg != null) updateSilenceState(cfg.isClientSilenced());
                 }
             };
             recorder.registerAudioRecordingCallback(context.getMainExecutor(), recordingCallback);
@@ -145,7 +141,7 @@ final class MicProbeEngine {
             startedAtMs = SystemClock.elapsedRealtime();
             running.set(true);
             finalStatus = "recording";
-            emit(snapshot("Слушам. Отвори TikTok Live и говори 15–30 секунди."));
+            emit(snapshot("Слушам. AI обработва на кратки аудио сегменти."));
 
             readThread = new Thread(() -> readLoop(bufferBytes), "MicProbeAudioReader");
             readThread.start();
@@ -165,44 +161,32 @@ final class MicProbeEngine {
         }
 
         finalStatus = reason == null ? "stopped" : reason;
-
         AudioRecord r = recorder;
         if (r != null) {
             try {
-                if (r.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) {
-                    r.stop();
-                }
-            } catch (Throwable ignored) {
-            }
+                if (r.getRecordingState() == AudioRecord.RECORDSTATE_RECORDING) r.stop();
+            } catch (Throwable ignored) {}
         }
 
         Thread t = readThread;
         if (t != null && t != Thread.currentThread()) {
-            try {
-                t.join(500);
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
+            try { t.join(500); }
+            catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
         }
 
         long duration = startedAtMs == 0 ? 0 : Math.max(0, SystemClock.elapsedRealtime() - startedAtMs);
-        ProbeResultStore.save(
-                context,
-                duration,
-                silenceEvents,
-                peakDb,
-                audibleWindows,
-                tiktokSeen,
-                finalStatus
-        );
+        ProbeResultStore.save(context, duration, silenceEvents, peakDb, audibleWindows, tiktokSeen, finalStatus);
 
         safeRelease();
         emit(new Snapshot(false, lastSilenced, peakDb, silenceEvents,
-                "Тестът е спрян. Отвори основното приложение за резултата."));
+                "Спряно. Натисни START за нова AI сесия."));
     }
 
     private void readLoop(int bufferBytes) {
         short[] buffer = new short[Math.max(1024, bufferBytes / 2)];
+        short[] aiChunk = new short[SAMPLE_RATE * AI_CHUNK_SECONDS];
+        int aiPos = 0;
+        int voicedReads = 0;
         long lastUiUpdate = 0;
 
         while (running.get()) {
@@ -216,7 +200,7 @@ final class MicProbeEngine {
                 if (running.get()) {
                     finalStatus = "read_error";
                     emit(new Snapshot(false, lastSilenced, peakDb, silenceEvents,
-                            "Грешка при четене на микрофона: " + safeMessage(t)));
+                            "Грешка при микрофона: " + safeMessage(t)));
                 }
                 break;
             }
@@ -241,11 +225,22 @@ final class MicProbeEngine {
 
             boolean silenced = queryClientSilenced();
             updateSilenceState(silenced);
+            if (!silenced && db > -55.0) audibleWindows++;
+            if (!silenced && db > -48.0) voicedReads++;
 
-            // One window is roughly one blocking read. -55 dBFS is deliberately lenient;
-            // this is only evidence that non-zero mic audio is arriving, not speech recognition.
-            if (!silenced && db > -55.0) {
-                audibleWindows++;
+            int offset = 0;
+            while (offset < read) {
+                int n = Math.min(read - offset, aiChunk.length - aiPos);
+                System.arraycopy(buffer, offset, aiChunk, aiPos, n);
+                aiPos += n;
+                offset += n;
+                if (aiPos == aiChunk.length) {
+                    if (!silenced && voicedReads >= 2) {
+                        listener.onPcmChunk(Arrays.copyOf(aiChunk, aiChunk.length), SAMPLE_RATE);
+                    }
+                    aiPos = 0;
+                    voicedReads = 0;
+                }
             }
 
             long now = SystemClock.elapsedRealtime();
@@ -253,7 +248,7 @@ final class MicProbeEngine {
                 lastUiUpdate = now;
                 String s = silenced
                         ? "ANDROID Е ЗАГЛУШИЛ НАШИЯ MIC CLIENT"
-                        : String.format(Locale.US, "Получавам звук: %.1f dBFS", db);
+                        : String.format(Locale.US, "Mic %.1f dBFS • AI слуша", db);
                 emit(new Snapshot(true, silenced, db, silenceEvents, s));
             }
         }
@@ -271,9 +266,7 @@ final class MicProbeEngine {
     }
 
     private synchronized void updateSilenceState(boolean silenced) {
-        if (silenced && !lastSilenced) {
-            silenceEvents++;
-        }
+        if (silenced && !lastSilenced) silenceEvents++;
         lastSilenced = silenced;
     }
 
@@ -295,19 +288,12 @@ final class MicProbeEngine {
         AudioRecord r = recorder;
         recorder = null;
         readThread = null;
-
         if (r != null) {
             try {
-                if (recordingCallback != null) {
-                    r.unregisterAudioRecordingCallback(recordingCallback);
-                }
-            } catch (Throwable ignored) {
-            }
+                if (recordingCallback != null) r.unregisterAudioRecordingCallback(recordingCallback);
+            } catch (Throwable ignored) {}
             recordingCallback = null;
-            try {
-                r.release();
-            } catch (Throwable ignored) {
-            }
+            try { r.release(); } catch (Throwable ignored) {}
         }
     }
 
