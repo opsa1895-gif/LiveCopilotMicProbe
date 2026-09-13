@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 14
-        versionName = "0.14.0-latency-debug"
+        versionCode = 15
+        versionName = "0.15.0-realtime-stt"
     }
 
     compileOptions {
@@ -21,5 +21,6 @@ android {
 }
 
 dependencies {
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
     testImplementation("junit:junit:4.13.2")
 }
