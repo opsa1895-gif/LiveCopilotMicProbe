@@ -236,8 +236,8 @@ final class MicProbeEngine {
                 if (!speaking && latestDb < -30.0) {
                     noiseFloorDb = noiseFloorDb * 0.97 + latestDb * 0.03;
                 }
-                double voiceThreshold = clamp(noiseFloorDb + 11.0, -50.0, -31.0);
-                boolean voiced = !silenced && latestDb >= voiceThreshold;
+                boolean voiced = VoiceActivityPolicy.isVoiced(
+                        latestDb, noiseFloorDb, speaking, silenced);
 
                 short[] frameCopy = frame.clone();
 
