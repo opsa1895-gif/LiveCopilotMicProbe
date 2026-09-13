@@ -1,9 +1,14 @@
 package com.livecopilot.micprobe;
 
 import android.accessibilityservice.AccessibilityService;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Bundle;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -13,9 +18,10 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.util.ArrayList;
 import java.util.Locale;
 
-public class MicProbeAccessibilityService extends AccessibilityService implements MicProbeEngine.Listener, OpenAiCopilotClient.Listener {
+public class MicProbeAccessibilityService extends AccessibilityService implements MicProbeEngine.Listener {
     private WindowManager windowManager;
     private WindowManager.LayoutParams params;
     private LinearLayout overlay;
@@ -31,14 +37,17 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private Button stopButton;
 
     private MicProbeEngine engine;
-    private OpenAiCopilotClient aiClient;
+    private SpeechRecognizer recognizer;
+    private Intent recognizerIntent;
+    private boolean recognitionWanted;
+    private boolean restartingRecognition;
     private String foregroundPackage = "неизвестно";
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
         engine = new MicProbeEngine(this, this);
-        aiClient = new OpenAiCopilotClient(this, this);
+        setupSpeechRecognizer();
         showOverlay();
     }
 
@@ -59,8 +68,13 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onDestroy() {
+        recognitionWanted = false;
+        if (recognizer != null) {
+            try { recognizer.cancel(); } catch (Throwable ignored) {}
+            try { recognizer.destroy(); } catch (Throwable ignored) {}
+            recognizer = null;
+        }
         if (engine != null && engine.isRunning()) engine.stop("service_destroyed");
-        if (aiClient != null) aiClient.shutdown();
         removeOverlay();
         super.onDestroy();
     }
@@ -72,31 +86,113 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onPcmChunk(short[] samples, int sampleRate) {
-        if (aiClient != null) aiClient.submitAudio(samples, sampleRate);
+        // Kept intentionally: the proven AudioRecord path still runs as a mic-health monitor.
+        // Android's SpeechRecognizer owns its own recognition stream.
     }
 
-    @Override
-    public void onTranscript(String transcript) {
-        getMainExecutor().execute(() -> {
-            if (transcriptText != null) transcriptText.setText("Чух: “" + transcript + "”");
+    private void setupSpeechRecognizer() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) return;
+        recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        recognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "bg-BG");
+        recognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        recognizerIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+
+        recognizer.setRecognitionListener(new RecognitionListener() {
+            @Override public void onReadyForSpeech(Bundle params) { setAiStatus("Слушам за реплика…"); }
+            @Override public void onBeginningOfSpeech() { setAiStatus("Чувам реч…"); }
+            @Override public void onRmsChanged(float rmsdB) {}
+            @Override public void onBufferReceived(byte[] buffer) {}
+            @Override public void onEndOfSpeech() { setAiStatus("Обработвам репликата…"); }
+
+            @Override
+            public void onError(int error) {
+                if (!recognitionWanted) return;
+                if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+                    scheduleRecognitionRestart(700);
+                } else if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                    scheduleRecognitionRestart(350);
+                } else {
+                    setAiStatus("Speech error " + error + " — опитвам пак…");
+                    scheduleRecognitionRestart(900);
+                }
+            }
+
+            @Override
+            public void onResults(Bundle results) {
+                String best = bestText(results);
+                if (!best.isEmpty()) showTranscriptAndReplies(best);
+                if (recognitionWanted) scheduleRecognitionRestart(250);
+            }
+
+            @Override
+            public void onPartialResults(Bundle partialResults) {
+                String best = bestText(partialResults);
+                if (!best.isEmpty() && transcriptText != null) transcriptText.setText("Чувам: “" + best + "”");
+            }
+
+            @Override public void onEvent(int eventType, Bundle params) {}
         });
     }
 
-    @Override
-    public void onReplies(OpenAiCopilotClient.Replies replies) {
+    private String bestText(Bundle bundle) {
+        if (bundle == null) return "";
+        ArrayList<String> list = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        if (list == null || list.isEmpty() || list.get(0) == null) return "";
+        return list.get(0).trim();
+    }
+
+    private void startRecognitionLoop() {
+        recognitionWanted = true;
+        if (recognizer == null || recognizerIntent == null) {
+            setAiStatus("На този телефон няма наличен Android SpeechRecognizer.");
+            return;
+        }
+        try {
+            recognizer.startListening(recognizerIntent);
+        } catch (Throwable t) {
+            setAiStatus("Не мога да стартирам speech recognition: " + t.getClass().getSimpleName());
+        }
+    }
+
+    private void scheduleRecognitionRestart(long delayMs) {
+        if (!recognitionWanted || restartingRecognition) return;
+        restartingRecognition = true;
         getMainExecutor().execute(() -> {
-            if (directText != null) directText.setText("ТОЧЕН: " + replies.direct);
-            if (sarcasticText != null) sarcasticText.setText("САРКАЗЪМ: " + replies.sarcastic);
-            if (funnyText != null) funnyText.setText("ЗАБАВЕН: " + replies.funny);
-            if (calmText != null) calmText.setText("СПОКОЕН: " + replies.calm);
+            if (!recognitionWanted) {
+                restartingRecognition = false;
+                return;
+            }
+            if (overlay != null) overlay.postDelayed(() -> {
+                restartingRecognition = false;
+                if (!recognitionWanted || recognizer == null) return;
+                try { recognizer.startListening(recognizerIntent); }
+                catch (Throwable ignored) { scheduleRecognitionRestart(900); }
+            }, delayMs);
         });
     }
 
-    @Override
-    public void onStatus(String status) {
-        getMainExecutor().execute(() -> {
-            if (statusText != null) statusText.setText(status);
-        });
+    private void stopRecognition() {
+        recognitionWanted = false;
+        restartingRecognition = false;
+        if (recognizer != null) {
+            try { recognizer.cancel(); } catch (Throwable ignored) {}
+        }
+    }
+
+    private void showTranscriptAndReplies(String transcript) {
+        transcriptText.setText("Чух: “" + transcript + "”");
+        ReplyGenerator.Replies r = ReplyGenerator.generate(transcript);
+        directText.setText("ТОЧЕН: " + r.direct);
+        sarcasticText.setText("САРКАЗЪМ: " + r.sarcastic);
+        funnyText.setText("ЗАБАВЕН: " + r.funny);
+        calmText.setText("СПОКОЕН: " + r.calm);
+        setAiStatus("Готови варианти — продължавам да слушам.");
+    }
+
+    private void setAiStatus(String value) {
+        if (statusText != null) statusText.setText(value);
     }
 
     private void showOverlay() {
@@ -112,7 +208,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         bg.setStroke(dp(1), Color.argb(140, 255, 255, 255));
         overlay.setBackground(bg);
 
-        TextView header = text("LIVE COPILOT AI • v0.2", 14, Color.WHITE);
+        TextView header = text("LIVE COPILOT • v0.2", 14, Color.WHITE);
         header.setTypeface(header.getTypeface(), android.graphics.Typeface.BOLD);
         overlay.addView(header);
 
@@ -120,7 +216,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         appText.setPadding(0, dp(3), 0, 0);
         overlay.addView(appText);
 
-        statusText = text("Натисни START. AI ще слуша на 4-секундни сегменти.", 12, Color.WHITE);
+        statusText = text("Натисни START — ще слушам и ще давам 4 варианта.", 12, Color.WHITE);
         statusText.setPadding(0, dp(6), 0, dp(4));
         overlay.addView(statusText);
 
@@ -150,11 +246,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         startButton.setOnClickListener(v -> {
             if (engine != null) engine.start();
+            startRecognitionLoop();
         });
         stopButton.setOnClickListener(v -> {
+            stopRecognition();
             if (engine != null) engine.stop("user_stopped");
         });
         hideButton.setOnClickListener(v -> {
+            stopRecognition();
             if (engine != null && engine.isRunning()) engine.stop("overlay_hidden");
             removeOverlay();
         });
@@ -220,7 +319,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 snapshot.dbfs, snapshot.silenceEvents));
 
         if (snapshot.clientSilenced) {
-            statusText.setText(snapshot.status);
+            statusText.setText("Mic client е заглушен от Android");
             statusText.setTextColor(Color.rgb(255, 100, 100));
         } else if (snapshot.running) {
             statusText.setTextColor(Color.rgb(120, 255, 160));
