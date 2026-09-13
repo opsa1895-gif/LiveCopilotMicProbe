@@ -22,6 +22,7 @@ import java.util.Locale;
 public class MicProbeAccessibilityService extends AccessibilityService implements MicProbeEngine.Listener, OpenAiCopilotClient.Listener {
     private static final String UI_PREFS = "live_copilot_ui";
     private static final long CONTEXT_RESET_AFTER_PAUSE_MS = 90_000L;
+    private static final long SEMANTIC_CONTEXT_IDLE_RESET_MS = 45_000L;
     private static final long SEMANTIC_MIN_GAP_MS = 6_000L;
     private static final long SEMANTIC_FOCUS_MAX_AGE_MS = 12_000L;
     private static final int SEMANTIC_CONTEXT_TURNS = 6;
@@ -57,6 +58,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private long pausedAtMs;
     private long pendingSemanticAtMs;
     private long lastSemanticRequestAtMs;
+    private long lastSemanticTranscriptAtMs;
     private long semanticAnswerBaselineMs;
     private long activeSemanticRequestId = -1L;
 
@@ -136,10 +138,21 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         String clean = transcript == null ? "" : transcript.replace('\n', ' ').trim();
         lastTranscript = clean;
         if (!clean.isEmpty()) {
+            long now = System.currentTimeMillis();
+            if (semanticFallback != null && activeSemanticRequestId >= 0L) {
+                semanticFallback.invalidate();
+                activeSemanticRequestId = -1L;
+            }
+            if ((lastSemanticTranscriptAtMs > 0L
+                    && now - lastSemanticTranscriptAtMs >= SEMANTIC_CONTEXT_IDLE_RESET_MS)
+                    || isSemanticTopicShift(clean)) {
+                semanticTurns.clear();
+            }
+            lastSemanticTranscriptAtMs = now;
             semanticTurns.addLast(clean);
             while (semanticTurns.size() > SEMANTIC_CONTEXT_TURNS) semanticTurns.removeFirst();
             pendingSemanticFocus = clean;
-            pendingSemanticAtMs = System.currentTimeMillis();
+            pendingSemanticAtMs = now;
         }
         getMainExecutor().execute(this::renderDebug);
     }
@@ -151,7 +164,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             if (semanticFallback != null) semanticFallback.invalidate();
             activeSemanticRequestId = -1L;
             pendingSemanticFocus = "";
-            currentReplies = mergeReplies(currentReplies, replies);
+            currentReplies = replies;
             answerUpdatedAtMs = System.currentTimeMillis();
             if (answerText != null) answerText.setAlpha(1f);
             if (collapsed && headerText != null) headerText.setText("AI •");
@@ -234,19 +247,13 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         return out.toString();
     }
 
-    private static OpenAiCopilotClient.Replies mergeReplies(
-            OpenAiCopilotClient.Replies oldReplies,
-            OpenAiCopilotClient.Replies incoming) {
-        if (oldReplies == null) return incoming;
-        String direct = nonEmpty(incoming.direct, oldReplies.direct);
-        String sarcastic = nonEmpty(incoming.sarcastic, oldReplies.sarcastic);
-        String funny = nonEmpty(incoming.funny, oldReplies.funny);
-        String calm = nonEmpty(incoming.calm, oldReplies.calm);
-        return new OpenAiCopilotClient.Replies(direct, sarcastic, funny, calm);
-    }
-
-    private static String nonEmpty(String preferred, String fallback) {
-        return preferred == null || preferred.trim().isEmpty() ? fallback : preferred;
+    private static boolean isSemanticTopicShift(String value) {
+        String v = value == null ? "" : value.toLowerCase(Locale.ROOT).trim();
+        return v.startsWith("между другото")
+                || v.startsWith("друга тема")
+                || v.startsWith("нов въпрос")
+                || v.startsWith("друго нещо")
+                || v.startsWith("сменям темата");
     }
 
     private static boolean isListeningStatus(String status) {
@@ -386,6 +393,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             lastTranscript = "";
             pendingSemanticFocus = "";
             pendingSemanticAtMs = 0L;
+            lastSemanticRequestAtMs = 0L;
+            lastSemanticTranscriptAtMs = 0L;
             semanticTurns.clear();
             if (answerText != null) {
                 answerText.setText("Слушам разговора…");
@@ -401,12 +410,23 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     private void renderSelectedReply() {
-        if (styleButton != null) styleButton.setText(styleLabel(styleIndex) + " ›");
-        if (answerText == null || currentReplies == null) return;
+        if (answerText == null || currentReplies == null) {
+            if (styleButton != null) styleButton.setText(styleLabel(styleIndex) + " ›");
+            return;
+        }
 
-        String value = selectedReply(currentReplies, styleIndex);
+        String preferred = selectedReply(currentReplies, styleIndex);
+        boolean usingDirectFallback = styleIndex != 0
+                && (preferred == null || preferred.trim().isEmpty())
+                && currentReplies.direct != null
+                && !currentReplies.direct.trim().isEmpty();
+        String value = usingDirectFallback ? currentReplies.direct : preferred;
         if (value == null || value.trim().isEmpty()) value = currentReplies.direct;
         if (value == null || value.trim().isEmpty()) return;
+
+        if (styleButton != null) {
+            styleButton.setText(usingDirectFallback ? "ТОЧЕН •" : styleLabel(styleIndex) + " ›");
+        }
         answerText.setText(value.trim());
         answerText.setAlpha(1f);
     }
