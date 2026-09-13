@@ -15,11 +15,16 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Locale;
 
 public class MicProbeAccessibilityService extends AccessibilityService implements MicProbeEngine.Listener, OpenAiCopilotClient.Listener {
     private static final String UI_PREFS = "live_copilot_ui";
     private static final long CONTEXT_RESET_AFTER_PAUSE_MS = 90_000L;
+    private static final long SEMANTIC_MIN_GAP_MS = 6_000L;
+    private static final long SEMANTIC_FOCUS_MAX_AGE_MS = 12_000L;
+    private static final int SEMANTIC_CONTEXT_TURNS = 6;
 
     private WindowManager windowManager;
     private WindowManager.LayoutParams params;
@@ -35,17 +40,25 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     private MicProbeEngine engine;
     private OpenAiCopilotClient aiClient;
+    private SemanticReplyFallback semanticFallback;
     private OpenAiCopilotClient.Replies currentReplies;
     private MicProbeEngine.Snapshot latestSnapshot;
+    private final Deque<String> semanticTurns = new ArrayDeque<>();
+
     private String foregroundPackage = "неизвестно";
     private String lastTranscript = "";
     private String aiStatus = "Готов";
+    private String pendingSemanticFocus = "";
     private int styleIndex;
     private boolean collapsed;
     private boolean debugVisible;
     private boolean hasStartedSession;
     private long answerUpdatedAtMs;
     private long pausedAtMs;
+    private long pendingSemanticAtMs;
+    private long lastSemanticRequestAtMs;
+    private long semanticAnswerBaselineMs;
+    private long activeSemanticRequestId = -1L;
 
     @Override
     protected void onServiceConnected() {
@@ -53,6 +66,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         loadUiState();
         engine = new MicProbeEngine(this, this);
         aiClient = new OpenAiCopilotClient(this, this);
+        semanticFallback = new SemanticReplyFallback(this, (requestId, replies) ->
+                getMainExecutor().execute(() -> applySemanticReply(requestId, replies)));
         showOverlay();
     }
 
@@ -71,6 +86,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     public void onDestroy() {
         if (engine != null && engine.isRunning()) engine.stop("service_destroyed");
         if (aiClient != null) aiClient.shutdown();
+        if (semanticFallback != null) semanticFallback.shutdown();
         removeOverlay();
         super.onDestroy();
     }
@@ -117,7 +133,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onTranscript(String transcript) {
-        lastTranscript = transcript == null ? "" : transcript;
+        String clean = transcript == null ? "" : transcript.replace('\n', ' ').trim();
+        lastTranscript = clean;
+        if (!clean.isEmpty()) {
+            semanticTurns.addLast(clean);
+            while (semanticTurns.size() > SEMANTIC_CONTEXT_TURNS) semanticTurns.removeFirst();
+            pendingSemanticFocus = clean;
+            pendingSemanticAtMs = System.currentTimeMillis();
+        }
         getMainExecutor().execute(this::renderDebug);
     }
 
@@ -125,7 +148,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     public void onReplies(OpenAiCopilotClient.Replies replies) {
         getMainExecutor().execute(() -> {
             if (engine == null || !engine.isRunning() || replies == null) return;
-            currentReplies = replies;
+            if (semanticFallback != null) semanticFallback.invalidate();
+            activeSemanticRequestId = -1L;
+            pendingSemanticFocus = "";
+            currentReplies = mergeReplies(currentReplies, replies);
             answerUpdatedAtMs = System.currentTimeMillis();
             if (answerText != null) answerText.setAlpha(1f);
             if (collapsed && headerText != null) headerText.setText("AI •");
@@ -135,8 +161,97 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onStatus(String status) {
-        aiStatus = simplifyStatus(status);
-        getMainExecutor().execute(this::renderStatus);
+        String raw = status == null ? "" : status.trim();
+        aiStatus = simplifyStatus(raw);
+        getMainExecutor().execute(() -> {
+            renderStatus();
+            if (isListeningStatus(raw)) scheduleSemanticFallbackIfNeeded();
+        });
+    }
+
+    private void scheduleSemanticFallbackIfNeeded() {
+        if (overlay == null || engine == null || !engine.isRunning()) return;
+        if (pendingSemanticFocus.isEmpty() || semanticFallback == null) return;
+        if (answerUpdatedAtMs >= pendingSemanticAtMs) {
+            pendingSemanticFocus = "";
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now - pendingSemanticAtMs > SEMANTIC_FOCUS_MAX_AGE_MS) {
+            pendingSemanticFocus = "";
+            return;
+        }
+
+        long wait = Math.max(0L, SEMANTIC_MIN_GAP_MS - (now - lastSemanticRequestAtMs));
+        String focusSnapshot = pendingSemanticFocus;
+        long focusTimeSnapshot = pendingSemanticAtMs;
+        if (wait > 0L) {
+            overlay.postDelayed(() -> {
+                if (focusSnapshot.equals(pendingSemanticFocus)
+                        && focusTimeSnapshot == pendingSemanticAtMs
+                        && answerUpdatedAtMs < focusTimeSnapshot) {
+                    requestSemanticFallback(focusSnapshot, focusTimeSnapshot);
+                }
+            }, wait);
+            return;
+        }
+        requestSemanticFallback(focusSnapshot, focusTimeSnapshot);
+    }
+
+    private void requestSemanticFallback(String focus, long focusAtMs) {
+        if (engine == null || !engine.isRunning() || semanticFallback == null) return;
+        long now = System.currentTimeMillis();
+        if (focus == null || focus.isEmpty() || now - focusAtMs > SEMANTIC_FOCUS_MAX_AGE_MS) return;
+        if (answerUpdatedAtMs >= focusAtMs) return;
+        if (now - lastSemanticRequestAtMs < SEMANTIC_MIN_GAP_MS) return;
+
+        lastSemanticRequestAtMs = now;
+        semanticAnswerBaselineMs = answerUpdatedAtMs;
+        activeSemanticRequestId = semanticFallback.request(buildSemanticContext(), focus);
+        pendingSemanticFocus = "";
+    }
+
+    private void applySemanticReply(long requestId, OpenAiCopilotClient.Replies replies) {
+        if (requestId < 0L || requestId != activeSemanticRequestId) return;
+        if (engine == null || !engine.isRunning() || replies == null) return;
+        if (answerUpdatedAtMs > semanticAnswerBaselineMs) return;
+
+        currentReplies = replies;
+        answerUpdatedAtMs = System.currentTimeMillis();
+        if (answerText != null) answerText.setAlpha(1f);
+        if (collapsed && headerText != null) headerText.setText("AI •");
+        renderSelectedReply();
+        activeSemanticRequestId = -1L;
+    }
+
+    private String buildSemanticContext() {
+        StringBuilder out = new StringBuilder();
+        for (String turn : semanticTurns) {
+            if (out.length() > 0) out.append('\n');
+            out.append("- ").append(turn);
+        }
+        return out.toString();
+    }
+
+    private static OpenAiCopilotClient.Replies mergeReplies(
+            OpenAiCopilotClient.Replies oldReplies,
+            OpenAiCopilotClient.Replies incoming) {
+        if (oldReplies == null) return incoming;
+        String direct = nonEmpty(incoming.direct, oldReplies.direct);
+        String sarcastic = nonEmpty(incoming.sarcastic, oldReplies.sarcastic);
+        String funny = nonEmpty(incoming.funny, oldReplies.funny);
+        String calm = nonEmpty(incoming.calm, oldReplies.calm);
+        return new OpenAiCopilotClient.Replies(direct, sarcastic, funny, calm);
+    }
+
+    private static String nonEmpty(String preferred, String fallback) {
+        return preferred == null || preferred.trim().isEmpty() ? fallback : preferred;
+    }
+
+    private static boolean isListeningStatus(String status) {
+        String lower = status == null ? "" : status.toLowerCase(Locale.ROOT).trim();
+        return lower.equals("слушам") || lower.equals("слушам…") || lower.contains("продължавам да слушам");
     }
 
     private void loadUiState() {
@@ -251,6 +366,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (engine.isRunning()) {
             engine.stop("user_paused");
             pausedAtMs = System.currentTimeMillis();
+            if (semanticFallback != null) semanticFallback.invalidate();
+            activeSemanticRequestId = -1L;
+            pendingSemanticFocus = "";
             aiStatus = "Пауза";
             renderStatus();
             return;
@@ -259,12 +377,16 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         long now = System.currentTimeMillis();
         boolean resetContext = !hasStartedSession || pausedAtMs == 0L || now - pausedAtMs >= CONTEXT_RESET_AFTER_PAUSE_MS;
         if (resetContext && aiClient != null) aiClient.resetSession();
+        if (resetContext && semanticFallback != null) semanticFallback.invalidate();
         hasStartedSession = true;
 
         if (resetContext) {
             currentReplies = null;
             answerUpdatedAtMs = 0L;
             lastTranscript = "";
+            pendingSemanticFocus = "";
+            pendingSemanticAtMs = 0L;
+            semanticTurns.clear();
             if (answerText != null) {
                 answerText.setText("Слушам разговора…");
                 answerText.setAlpha(0.75f);
