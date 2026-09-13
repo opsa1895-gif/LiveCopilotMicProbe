@@ -10,7 +10,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -36,6 +35,7 @@ final class RealtimeTranscriptionClient {
     private final Listener listener;
     private final OkHttpClient httpClient;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final StreamingAudioPreprocessor streamingPreprocessor = new StreamingAudioPreprocessor();
 
     private WebSocket socket;
     private boolean wanted;
@@ -87,12 +87,14 @@ final class RealtimeTranscriptionClient {
         activeTurnSerial = ++serial;
         sentSamples = 0;
         partial.setLength(0);
+        streamingPreprocessor.reset(sourceSampleRate);
         return true;
     }
 
     synchronized boolean append(short[] pcm16, int sourceSampleRate) {
         if (!turnActive || !ready || socket == null || pcm16 == null || pcm16.length == 0) return false;
-        short[] realtime = PcmResampler.resample(pcm16, sourceSampleRate, REALTIME_SAMPLE_RATE);
+        short[] cleaned = streamingPreprocessor.process(pcm16, sourceSampleRate);
+        short[] realtime = PcmResampler.resample(cleaned, sourceSampleRate, REALTIME_SAMPLE_RATE);
         if (realtime.length == 0) return true;
 
         JSONObject event = new JSONObject();
