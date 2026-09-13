@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -19,21 +20,26 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private WindowManager windowManager;
     private WindowManager.LayoutParams params;
     private LinearLayout overlay;
+    private LinearLayout controls;
+    private TextView headerText;
     private TextView statusText;
-    private TextView appText;
-    private TextView meterText;
-    private TextView transcriptText;
-    private TextView directText;
-    private TextView sarcasticText;
-    private TextView funnyText;
-    private TextView calmText;
-    private Button startButton;
-    private Button stopButton;
+    private TextView answerText;
+    private TextView debugText;
+    private Button styleButton;
+    private Button powerButton;
+    private Button collapseButton;
 
     private MicProbeEngine engine;
     private OpenAiCopilotClient aiClient;
+    private OpenAiCopilotClient.Replies currentReplies;
+    private MicProbeEngine.Snapshot latestSnapshot;
     private String foregroundPackage = "неизвестно";
-    private String aiStatus = "Натисни START";
+    private String lastTranscript = "";
+    private String aiStatus = "Готов";
+    private int styleIndex;
+    private boolean collapsed;
+    private boolean debugVisible;
+    private long answerUpdatedAtMs;
 
     @Override
     protected void onServiceConnected() {
@@ -49,11 +55,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         String pkg = event.getPackageName().toString();
         if (!pkg.equals(getPackageName())) foregroundPackage = pkg;
         if (isTikTokPackage(pkg) && engine != null) engine.markTikTokSeen();
-        if (appText != null) {
-            appText.setText(isTikTokPackage(foregroundPackage)
-                    ? "TikTok активен ✓"
-                    : "Foreground: " + foregroundPackage);
-        }
+        renderDebug();
     }
 
     @Override public void onInterrupt() {}
@@ -68,37 +70,64 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onSnapshot(MicProbeEngine.Snapshot snapshot) {
-        renderSnapshot(snapshot);
+        latestSnapshot = snapshot;
+        if (overlay == null) return;
+        if (snapshot.clientSilenced) {
+            aiStatus = "Микрофонът е блокиран";
+            if (statusText != null) statusText.setTextColor(Color.rgb(255, 115, 115));
+        } else if (!snapshot.running) {
+            aiStatus = snapshot.status;
+            if (statusText != null) statusText.setTextColor(Color.LTGRAY);
+        } else if (statusText != null) {
+            statusText.setTextColor(Color.rgb(145, 255, 175));
+        }
+        renderStatus();
+        renderDebug();
+        if (powerButton != null) powerButton.setText(snapshot.running ? "ПАУЗА" : "START");
+    }
+
+    @Override
+    public void onVoiceActivity(boolean speaking) {
+        if (overlay == null || engine == null || !engine.isRunning()) return;
+        if (speaking) {
+            aiStatus = "Слушам…";
+            if (answerText != null && System.currentTimeMillis() - answerUpdatedAtMs > 12_000L) {
+                answerText.setAlpha(0.55f);
+            }
+        } else {
+            aiStatus = "Обработвам…";
+        }
+        renderStatus();
     }
 
     @Override
     public void onPcmChunk(short[] samples, int sampleRate) {
-        if (aiClient != null) aiClient.submitAudio(samples, sampleRate);
+        if (aiClient != null && engine != null && engine.isRunning()) {
+            aiClient.submitAudio(samples, sampleRate);
+        }
     }
 
     @Override
     public void onTranscript(String transcript) {
-        getMainExecutor().execute(() -> {
-            if (transcriptText != null) transcriptText.setText("Чух: " + shorten(transcript, 120));
-        });
+        lastTranscript = transcript == null ? "" : transcript;
+        getMainExecutor().execute(this::renderDebug);
     }
 
     @Override
     public void onReplies(OpenAiCopilotClient.Replies replies) {
         getMainExecutor().execute(() -> {
-            if (directText != null) directText.setText("ТОЧЕН: " + replies.direct);
-            if (sarcasticText != null) sarcasticText.setText("САРКАЗЪМ: " + replies.sarcastic);
-            if (funnyText != null) funnyText.setText("ЗАБАВЕН: " + replies.funny);
-            if (calmText != null) calmText.setText("СПОКОЕН: " + replies.calm);
+            if (engine == null || !engine.isRunning()) return;
+            currentReplies = replies;
+            answerUpdatedAtMs = System.currentTimeMillis();
+            if (answerText != null) answerText.setAlpha(1f);
+            renderSelectedReply();
         });
     }
 
     @Override
     public void onStatus(String status) {
-        aiStatus = status;
-        getMainExecutor().execute(() -> {
-            if (statusText != null) statusText.setText(status);
-        });
+        aiStatus = simplifyStatus(status);
+        getMainExecutor().execute(this::renderStatus);
     }
 
     private void showOverlay() {
@@ -107,118 +136,175 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         overlay = new LinearLayout(this);
         overlay.setOrientation(LinearLayout.VERTICAL);
-        overlay.setPadding(dp(12), dp(10), dp(12), dp(10));
+        overlay.setPadding(dp(10), dp(8), dp(10), dp(9));
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.argb(232, 18, 18, 22));
+        bg.setColor(Color.argb(224, 16, 16, 20));
         bg.setCornerRadius(dp(16));
-        bg.setStroke(dp(1), Color.argb(140, 255, 255, 255));
+        bg.setStroke(dp(1), Color.argb(95, 255, 255, 255));
         overlay.setBackground(bg);
 
-        TextView header = text("LIVE COPILOT • v0.5 CLOUD STT", 14, Color.WHITE);
-        header.setTypeface(header.getTypeface(), android.graphics.Typeface.BOLD);
-        overlay.addView(header);
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
 
-        appText = text("Foreground: неизвестно", 11, Color.LTGRAY);
-        overlay.addView(appText);
+        headerText = text("LIVE COPILOT", 13, Color.WHITE);
+        headerText.setTypeface(headerText.getTypeface(), android.graphics.Typeface.BOLD);
+        headerText.setSingleLine(true);
+        LinearLayout.LayoutParams headerLp = new LinearLayout.LayoutParams(0, dp(36), 1f);
+        headerText.setGravity(Gravity.CENTER_VERTICAL);
+        headerText.setLayoutParams(headerLp);
+        top.addView(headerText);
 
-        statusText = text("START → по-точно cloud разпознаване", 12, Color.WHITE);
-        statusText.setPadding(0, dp(6), 0, dp(4));
+        collapseButton = smallButton("—");
+        collapseButton.setOnClickListener(v -> setCollapsed(!collapsed));
+        top.addView(collapseButton);
+        overlay.addView(top);
+
+        statusText = text("Готов", 11, Color.LTGRAY);
+        statusText.setSingleLine(true);
+        statusText.setEllipsize(TextUtils.TruncateAt.END);
+        statusText.setPadding(0, dp(1), 0, dp(5));
         overlay.addView(statusText);
 
-        meterText = text("Mic: -- dBFS", 11, Color.LTGRAY);
-        overlay.addView(meterText);
+        answerText = text("Натисни START и отвори TikTok.", 16, Color.WHITE);
+        answerText.setMaxLines(3);
+        answerText.setEllipsize(TextUtils.TruncateAt.END);
+        answerText.setPadding(dp(10), dp(10), dp(10), dp(10));
+        GradientDrawable answerBg = new GradientDrawable();
+        answerBg.setColor(Color.argb(95, 255, 255, 255));
+        answerBg.setCornerRadius(dp(12));
+        answerText.setBackground(answerBg);
+        overlay.addView(answerText);
 
-        transcriptText = text("Чух: —", 12, Color.rgb(210, 220, 255));
-        transcriptText.setMaxLines(3);
-        transcriptText.setPadding(0, dp(7), 0, dp(6));
-        overlay.addView(transcriptText);
+        debugText = text("", 10, Color.LTGRAY);
+        debugText.setMaxLines(4);
+        debugText.setEllipsize(TextUtils.TruncateAt.END);
+        debugText.setPadding(0, dp(6), 0, 0);
+        debugText.setVisibility(View.GONE);
+        overlay.addView(debugText);
 
-        directText = replyBox("ТОЧЕН: —");
-        sarcasticText = replyBox("САРКАЗЪМ: —");
-        funnyText = replyBox("ЗАБАВЕН: —");
-        calmText = replyBox("СПОКОЕН: —");
-        overlay.addView(directText);
-        overlay.addView(sarcasticText);
-        overlay.addView(funnyText);
-        overlay.addView(calmText);
+        controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        controls.setGravity(Gravity.END);
+        controls.setPadding(0, dp(7), 0, 0);
 
-        LinearLayout buttons = new LinearLayout(this);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        buttons.setGravity(Gravity.END);
-        buttons.setPadding(0, dp(8), 0, 0);
-
-        startButton = button("START");
-        stopButton = button("STOP");
-        Button hideButton = button("×");
-
-        startButton.setOnClickListener(v -> {
-            aiStatus = "Слушам • изпращам кратки аудио сегменти за разпознаване";
-            if (statusText != null) statusText.setText(aiStatus);
-            if (engine != null) engine.start();
+        styleButton = compactButton("ТОЧЕН ›");
+        styleButton.setOnClickListener(v -> {
+            styleIndex = (styleIndex + 1) % 4;
+            renderSelectedReply();
         });
-        stopButton.setOnClickListener(v -> {
-            if (engine != null) engine.stop("user_stopped");
-            aiStatus = "Спряно";
-        });
-        hideButton.setOnClickListener(v -> {
-            if (engine != null && engine.isRunning()) engine.stop("overlay_hidden");
-            removeOverlay();
-        });
+        controls.addView(styleButton);
 
-        buttons.addView(startButton);
-        buttons.addView(stopButton);
-        buttons.addView(hideButton);
-        overlay.addView(buttons);
+        powerButton = compactButton("START");
+        powerButton.setOnClickListener(v -> toggleRunning());
+        controls.addView(powerButton);
+        overlay.addView(controls);
+
+        headerText.setOnLongClickListener(v -> {
+            if (!collapsed) {
+                debugVisible = !debugVisible;
+                if (debugText != null) debugText.setVisibility(debugVisible ? View.VISIBLE : View.GONE);
+                renderDebug();
+            }
+            return true;
+        });
 
         params = new WindowManager.LayoutParams(
-                dp(370),
+                dp(330),
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.START;
         params.x = dp(8);
-        params.y = dp(48);
+        params.y = dp(50);
 
-        installDrag(header);
+        installDrag(headerText);
         windowManager.addView(overlay, params);
     }
 
-    private TextView replyBox(String initial) {
-        TextView t = text(initial, 13, Color.WHITE);
-        t.setMaxLines(3);
-        t.setPadding(dp(8), dp(7), dp(8), dp(7));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.argb(110, 255, 255, 255));
-        bg.setCornerRadius(dp(10));
-        t.setBackground(bg);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, dp(3), 0, 0);
-        t.setLayoutParams(lp);
-        return t;
-    }
-
-    private void renderSnapshot(MicProbeEngine.Snapshot snapshot) {
-        if (overlay == null) return;
-        meterText.setText(String.format(Locale.US,
-                "Mic %.1f dBFS • silenced %d",
-                snapshot.dbfs, snapshot.silenceEvents));
-
-        if (snapshot.clientSilenced) {
-            statusText.setText("Mic client е заглушен от Android");
-            statusText.setTextColor(Color.rgb(255, 100, 100));
-        } else if (snapshot.running) {
-            statusText.setText(aiStatus);
-            statusText.setTextColor(Color.rgb(120, 255, 160));
-        } else {
-            statusText.setText(snapshot.status);
-            statusText.setTextColor(Color.WHITE);
+    private void toggleRunning() {
+        if (engine == null) return;
+        if (engine.isRunning()) {
+            engine.stop("user_paused");
+            aiStatus = "Пауза";
+            renderStatus();
+            return;
         }
 
-        if (startButton != null) startButton.setEnabled(!snapshot.running);
-        if (stopButton != null) stopButton.setEnabled(snapshot.running);
+        currentReplies = null;
+        answerUpdatedAtMs = 0L;
+        if (answerText != null) {
+            answerText.setText("Слушам разговора…");
+            answerText.setAlpha(0.75f);
+        }
+        aiStatus = "Слушам…";
+        renderStatus();
+        engine.start();
+    }
+
+    private void renderSelectedReply() {
+        if (styleButton != null) styleButton.setText(styleLabel(styleIndex) + " ›");
+        if (answerText == null || currentReplies == null) return;
+
+        String value;
+        switch (styleIndex) {
+            case 1: value = currentReplies.sarcastic; break;
+            case 2: value = currentReplies.funny; break;
+            case 3: value = currentReplies.calm; break;
+            default: value = currentReplies.direct; break;
+        }
+        answerText.setText(value == null || value.trim().isEmpty() ? "…" : value.trim());
+        answerText.setAlpha(1f);
+    }
+
+    private String styleLabel(int index) {
+        switch (index) {
+            case 1: return "САРКАЗЪМ";
+            case 2: return "ЗАБАВЕН";
+            case 3: return "СПОКОЕН";
+            default: return "ТОЧЕН";
+        }
+    }
+
+    private void renderStatus() {
+        if (statusText != null) statusText.setText(aiStatus == null || aiStatus.isEmpty() ? "Слушам" : aiStatus);
+    }
+
+    private void renderDebug() {
+        if (debugText == null || !debugVisible) return;
+        String app = isTikTokPackage(foregroundPackage) ? "TikTok ✓" : foregroundPackage;
+        String mic = latestSnapshot == null
+                ? "mic —"
+                : String.format(Locale.US, "mic %.0f dB%s", latestSnapshot.dbfs,
+                latestSnapshot.clientSilenced ? " • BLOCKED" : "");
+        String heard = lastTranscript.isEmpty() ? "" : "\nЧух: " + shorten(lastTranscript, 115);
+        debugText.setText(app + " • " + mic + heard);
+    }
+
+    private void setCollapsed(boolean value) {
+        collapsed = value;
+        if (statusText != null) statusText.setVisibility(value ? View.GONE : View.VISIBLE);
+        if (answerText != null) answerText.setVisibility(value ? View.GONE : View.VISIBLE);
+        if (controls != null) controls.setVisibility(value ? View.GONE : View.VISIBLE);
+        if (debugText != null) debugText.setVisibility(!value && debugVisible ? View.VISIBLE : View.GONE);
+        if (headerText != null) headerText.setText(value ? "AI" : "LIVE COPILOT");
+        if (collapseButton != null) collapseButton.setText(value ? "+" : "—");
+        if (params != null && windowManager != null && overlay != null) {
+            params.width = dp(value ? 92 : 330);
+            try { windowManager.updateViewLayout(overlay, params); } catch (Throwable ignored) {}
+        }
+    }
+
+    private String simplifyStatus(String value) {
+        if (value == null) return "Слушам";
+        String lower = value.toLowerCase(Locale.ROOT);
+        if (lower.contains("липсва") && lower.contains("api")) return "Няма API key";
+        if (lower.contains("разпознав")) return "Разпознавам…";
+        if (lower.contains("4 отговора") || lower.contains("генерирам") || lower.contains("контекст")) return "Мисля…";
+        if (lower.contains("грешка") || lower.contains("error")) return "Проблем с AI връзката";
+        if (lower.contains("готово") || lower.contains("продължавам") || lower.equals("слушам…")) return "Слушам";
+        return shorten(value, 38);
     }
 
     private void removeOverlay() {
@@ -226,22 +312,21 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             try { windowManager.removeView(overlay); } catch (Throwable ignored) {}
         }
         overlay = null;
+        controls = null;
+        headerText = null;
         statusText = null;
-        appText = null;
-        meterText = null;
-        transcriptText = null;
-        directText = null;
-        sarcasticText = null;
-        funnyText = null;
-        calmText = null;
-        startButton = null;
-        stopButton = null;
+        answerText = null;
+        debugText = null;
+        styleButton = null;
+        powerButton = null;
+        collapseButton = null;
     }
 
     private void installDrag(View handle) {
         handle.setOnTouchListener(new View.OnTouchListener() {
             float downRawX, downRawY;
             int downX, downY;
+            boolean moved;
 
             @Override
             public boolean onTouch(View v, MotionEvent event) {
@@ -252,11 +337,19 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                         downRawY = event.getRawY();
                         downX = params.x;
                         downY = params.y;
+                        moved = false;
                         return true;
                     case MotionEvent.ACTION_MOVE:
-                        params.x = downX + Math.round(event.getRawX() - downRawX);
-                        params.y = downY + Math.round(event.getRawY() - downRawY);
+                        float dx = event.getRawX() - downRawX;
+                        float dy = event.getRawY() - downRawY;
+                        if (Math.abs(dx) + Math.abs(dy) > dp(4)) moved = true;
+                        params.x = downX + Math.round(dx);
+                        params.y = downY + Math.round(dy);
                         windowManager.updateViewLayout(overlay, params);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                        if (!moved && collapsed) setCollapsed(false);
+                        else if (!moved) v.performClick();
                         return true;
                     default:
                         return false;
@@ -273,13 +366,25 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         return t;
     }
 
-    private Button button(String label) {
+    private Button compactButton(String label) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT, dp(42));
-        lp.setMargins(dp(4), 0, 0, 0);
+        b.setTextSize(11);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(38), 1f);
+        lp.setMargins(dp(3), 0, 0, 0);
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    private Button smallButton(String label) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextSize(14);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(44), dp(36));
         b.setLayoutParams(lp);
         return b;
     }
