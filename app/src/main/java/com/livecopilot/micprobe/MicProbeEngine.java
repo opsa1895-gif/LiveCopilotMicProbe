@@ -13,7 +13,6 @@ import android.os.SystemClock;
 
 import java.util.ArrayDeque;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class MicProbeEngine {
@@ -43,7 +42,6 @@ final class MicProbeEngine {
     private static final int FRAME_SAMPLES = 320; // 20 ms
     private static final int PRE_ROLL_FRAMES = 20; // 400 ms
     private static final int START_VOICE_FRAMES = 2; // 40 ms
-    private static final int END_SILENCE_FRAMES = 30; // 600 ms
     private static final int MIN_SEGMENT_SAMPLES = SAMPLE_RATE;
     private static final int MAX_SEGMENT_SAMPLES = SAMPLE_RATE * 6;
     private static final int OVERLAP_SAMPLES = (int) (SAMPLE_RATE * 0.8); // forced long-turn split only
@@ -273,8 +271,12 @@ final class MicProbeEngine {
                         segment.append(overlap, overlap.length);
                         voicedFramesInSegment = voiced ? 1 : 0;
                         consecutiveSilenceFrames = voiced ? 0 : consecutiveSilenceFrames;
-                    } else if (consecutiveSilenceFrames >= END_SILENCE_FRAMES
-                            && segment.size() >= MIN_SEGMENT_SAMPLES) {
+                    } else if (SpeechTurnPolicy.shouldEndTurn(
+                            consecutiveSilenceFrames,
+                            segment.size(),
+                            SAMPLE_RATE,
+                            FRAME_SAMPLES,
+                            MIN_SEGMENT_SAMPLES)) {
                         emitSegment(segment, voicedFramesInSegment);
                         segment.clear();
                         speaking = false;
