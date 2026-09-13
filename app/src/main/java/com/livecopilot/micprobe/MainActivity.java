@@ -30,6 +30,8 @@ public class MainActivity extends Activity {
     private EditText apiKeyInput;
     private EditText keywordsInput;
     private EditText styleInput;
+    private LinearLayout advancedBox;
+    private Button advancedButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -86,39 +88,40 @@ public class MainActivity extends Activity {
         root.addView(sectionTitle("AI настройка"));
 
         apiKeyInput = input("OpenAI API key", true);
+        apiKeyInput.setText(SecretStore.loadApiKey(this));
         root.addView(apiKeyInput);
 
-        keywordsInput = input("Имена/думи за по-точно чуване (по желание)", false);
-        root.addView(keywordsInput);
+        advancedButton = button("Допълнителни настройки");
+        root.addView(advancedButton);
 
-        styleInput = input("Твоят стил, напр. кратък, остроумен (по желание)", false);
-        root.addView(styleInput);
+        advancedBox = new LinearLayout(this);
+        advancedBox.setOrientation(LinearLayout.VERTICAL);
+        advancedBox.setVisibility(View.GONE);
+        keywordsInput = input("Имена/думи за по-точно чуване", false);
+        styleInput = input("Твоят стил, напр. кратък, остроумен", false);
+        advancedBox.addView(keywordsInput);
+        advancedBox.addView(styleInput);
+        root.addView(advancedBox);
 
-        Context prefsContext = this;
-        String savedKey = getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE)
-                .getString("openai_api_key", "");
         String savedKeywords = getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE)
                 .getString("stt_keywords", "");
         String savedStyle = getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE)
                 .getString("host_style", "");
-        apiKeyInput.setText(savedKey);
         keywordsInput.setText(savedKeywords);
         styleInput.setText(savedStyle);
 
-        Button saveButton = button("Запази настройките");
-        saveButton.setOnClickListener(v -> {
-            getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE).edit()
-                    .putString("openai_api_key", apiKeyInput.getText().toString().trim())
-                    .putString("stt_keywords", keywordsInput.getText().toString().trim())
-                    .putString("host_style", styleInput.getText().toString().trim())
-                    .apply();
-            Toast.makeText(prefsContext, "Настройките са запазени", Toast.LENGTH_SHORT).show();
-            refreshState();
+        advancedButton.setOnClickListener(v -> {
+            boolean show = advancedBox.getVisibility() != View.VISIBLE;
+            advancedBox.setVisibility(show ? View.VISIBLE : View.GONE);
+            advancedButton.setText(show ? "Скрий допълнителните" : "Допълнителни настройки");
         });
+
+        Button saveButton = button("Запази настройките");
+        saveButton.setOnClickListener(v -> saveSettings());
         root.addView(saveButton);
 
         TextView note = text(
-                "При този прототип ключът се пази локално на телефона. За публична версия трябва backend, за да не стои ключ в приложението.",
+                "API ключът се пази криптирано чрез Android Keystore на този телефон. За публична версия ще преместим API достъпа зад backend.",
                 12, Color.GRAY);
         note.setPadding(0, dp(4), 0, dp(14));
         root.addView(note);
@@ -128,7 +131,7 @@ public class MainActivity extends Activity {
         root.addView(tiktokButton);
 
         TextView hint = text(
-                "В overlay-а: START започва слушане, стилът се сменя с един бутон, а „—“ свива всичко до малък AI прозорец. Дълго натискане върху LIVE COPILOT показва диагностика.",
+                "В overlay-а: START започва слушане, стилът се сменя с един бутон, а „—“ свива всичко до малък AI прозорец. Дълго натискане върху „—“ показва диагностика.",
                 12, Color.GRAY);
         hint.setPadding(0, dp(12), 0, 0);
         root.addView(hint);
@@ -136,12 +139,26 @@ public class MainActivity extends Activity {
         return scroll;
     }
 
+    private void saveSettings() {
+        String key = apiKeyInput.getText().toString().trim();
+        boolean keySaved = SecretStore.saveApiKey(this, key);
+        getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE).edit()
+                .putString("stt_keywords", keywordsInput.getText().toString().trim())
+                .putString("host_style", styleInput.getText().toString().trim())
+                .apply();
+
+        Toast.makeText(
+                this,
+                keySaved ? "Настройките са запазени" : "API ключът не можа да се запази сигурно",
+                Toast.LENGTH_SHORT).show();
+        refreshState();
+    }
+
     private void refreshState() {
         if (micState == null) return;
         boolean mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
         boolean accessibility = isOurAccessibilityServiceEnabled();
-        String key = getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE)
-                .getString("openai_api_key", "").trim();
+        String key = SecretStore.loadApiKey(this);
 
         micState.setText(mic ? "✓ Микрофон" : "○ Микрофонът чака разрешение");
         accessibilityState.setText(accessibility ? "✓ Overlay включен" : "○ Overlay не е включен");
@@ -151,7 +168,8 @@ public class MainActivity extends Activity {
     private boolean isOurAccessibilityServiceEnabled() {
         ComponentName expected = new ComponentName(this, MicProbeAccessibilityService.class);
         String enabled = Settings.Secure.getString(
-                getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                getContentResolver(),
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
         if (enabled == null) return false;
 
         TextUtils.SimpleStringSplitter splitter = new TextUtils.SimpleStringSplitter(':');

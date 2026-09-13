@@ -1,6 +1,7 @@
 package com.livecopilot.micprobe;
 
 import android.accessibilityservice.AccessibilityService;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
@@ -17,6 +18,9 @@ import android.widget.TextView;
 import java.util.Locale;
 
 public class MicProbeAccessibilityService extends AccessibilityService implements MicProbeEngine.Listener, OpenAiCopilotClient.Listener {
+    private static final String UI_PREFS = "live_copilot_ui";
+    private static final long CONTEXT_RESET_AFTER_PAUSE_MS = 90_000L;
+
     private WindowManager windowManager;
     private WindowManager.LayoutParams params;
     private LinearLayout overlay;
@@ -39,11 +43,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private int styleIndex;
     private boolean collapsed;
     private boolean debugVisible;
+    private boolean hasStartedSession;
     private long answerUpdatedAtMs;
+    private long pausedAtMs;
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
+        loadUiState();
         engine = new MicProbeEngine(this, this);
         aiClient = new OpenAiCopilotClient(this, this);
         showOverlay();
@@ -76,7 +83,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             aiStatus = "Микрофонът е блокиран";
             if (statusText != null) statusText.setTextColor(Color.rgb(255, 115, 115));
         } else if (!snapshot.running) {
-            aiStatus = snapshot.status;
+            if (!"user_paused".equals(snapshot.status)) aiStatus = snapshot.status;
             if (statusText != null) statusText.setTextColor(Color.LTGRAY);
         } else if (statusText != null) {
             statusText.setTextColor(Color.rgb(145, 255, 175));
@@ -129,6 +136,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     public void onStatus(String status) {
         aiStatus = simplifyStatus(status);
         getMainExecutor().execute(this::renderStatus);
+    }
+
+    private void loadUiState() {
+        SharedPreferences prefs = getSharedPreferences(UI_PREFS, MODE_PRIVATE);
+        styleIndex = Math.max(0, Math.min(3, prefs.getInt("style_index", 0)));
+        collapsed = prefs.getBoolean("collapsed", false);
     }
 
     private void showOverlay() {
@@ -197,9 +210,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         controls.setGravity(Gravity.END);
         controls.setPadding(0, dp(7), 0, 0);
 
-        styleButton = compactButton("ТОЧЕН ›");
+        styleButton = compactButton(styleLabel(styleIndex) + " ›");
         styleButton.setOnClickListener(v -> {
             styleIndex = (styleIndex + 1) % 4;
+            getSharedPreferences(UI_PREFS, MODE_PRIVATE).edit().putInt("style_index", styleIndex).apply();
             renderSelectedReply();
         });
         controls.addView(styleButton);
@@ -209,16 +223,24 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         controls.addView(powerButton);
         overlay.addView(controls);
 
+        SharedPreferences prefs = getSharedPreferences(UI_PREFS, MODE_PRIVATE);
+        int width = dp(collapsed ? 92 : 330);
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        int savedX = prefs.getInt("overlay_x", dp(8));
+        int savedY = prefs.getInt("overlay_y", dp(50));
+
         params = new WindowManager.LayoutParams(
-                dp(330),
+                width,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.START;
-        params.x = dp(8);
-        params.y = dp(50);
+        params.x = clampInt(savedX, 0, Math.max(0, screenWidth - width));
+        params.y = clampInt(savedY, 0, Math.max(0, screenHeight - dp(80)));
 
+        applyCollapsedVisuals();
         installDrag(headerText);
         windowManager.addView(overlay, params);
     }
@@ -227,17 +249,29 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (engine == null) return;
         if (engine.isRunning()) {
             engine.stop("user_paused");
+            pausedAtMs = System.currentTimeMillis();
             aiStatus = "Пауза";
             renderStatus();
             return;
         }
 
-        currentReplies = null;
-        answerUpdatedAtMs = 0L;
-        if (answerText != null) {
-            answerText.setText("Слушам разговора…");
-            answerText.setAlpha(0.75f);
+        long now = System.currentTimeMillis();
+        boolean resetContext = !hasStartedSession || pausedAtMs == 0L || now - pausedAtMs >= CONTEXT_RESET_AFTER_PAUSE_MS;
+        if (resetContext && aiClient != null) aiClient.resetSession();
+        hasStartedSession = true;
+
+        if (resetContext) {
+            currentReplies = null;
+            answerUpdatedAtMs = 0L;
+            lastTranscript = "";
+            if (answerText != null) {
+                answerText.setText("Слушам разговора…");
+                answerText.setAlpha(0.75f);
+            }
+        } else if (answerText != null) {
+            answerText.setAlpha(0.65f);
         }
+
         aiStatus = "Слушам…";
         renderStatus();
         engine.start();
@@ -289,16 +323,24 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     private void setCollapsed(boolean value) {
         collapsed = value;
-        if (statusText != null) statusText.setVisibility(value ? View.GONE : View.VISIBLE);
-        if (answerText != null) answerText.setVisibility(value ? View.GONE : View.VISIBLE);
-        if (controls != null) controls.setVisibility(value ? View.GONE : View.VISIBLE);
-        if (debugText != null) debugText.setVisibility(!value && debugVisible ? View.VISIBLE : View.GONE);
-        if (headerText != null) headerText.setText(value ? "AI" : "LIVE COPILOT");
-        if (collapseButton != null) collapseButton.setText(value ? "+" : "—");
+        getSharedPreferences(UI_PREFS, MODE_PRIVATE).edit().putBoolean("collapsed", value).apply();
+        applyCollapsedVisuals();
         if (params != null && windowManager != null && overlay != null) {
             params.width = dp(value ? 92 : 330);
+            int screenWidth = getResources().getDisplayMetrics().widthPixels;
+            params.x = clampInt(params.x, 0, Math.max(0, screenWidth - params.width));
             try { windowManager.updateViewLayout(overlay, params); } catch (Throwable ignored) {}
+            saveOverlayPosition();
         }
+    }
+
+    private void applyCollapsedVisuals() {
+        if (statusText != null) statusText.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        if (answerText != null) answerText.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        if (controls != null) controls.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        if (debugText != null) debugText.setVisibility(!collapsed && debugVisible ? View.VISIBLE : View.GONE);
+        if (headerText != null) headerText.setText(collapsed ? "AI" : "LIVE COPILOT");
+        if (collapseButton != null) collapseButton.setText(collapsed ? "+" : "—");
     }
 
     private String simplifyStatus(String value) {
@@ -313,6 +355,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     private void removeOverlay() {
+        saveOverlayPosition();
         if (windowManager != null && overlay != null) {
             try { windowManager.removeView(overlay); } catch (Throwable ignored) {}
         }
@@ -325,6 +368,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         styleButton = null;
         powerButton = null;
         collapseButton = null;
+    }
+
+    private void saveOverlayPosition() {
+        if (params == null) return;
+        getSharedPreferences(UI_PREFS, MODE_PRIVATE).edit()
+                .putInt("overlay_x", params.x)
+                .putInt("overlay_y", params.y)
+                .apply();
     }
 
     private void installDrag(View handle) {
@@ -348,13 +399,16 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                         float dx = event.getRawX() - downRawX;
                         float dy = event.getRawY() - downRawY;
                         if (Math.abs(dx) + Math.abs(dy) > dp(4)) moved = true;
-                        params.x = downX + Math.round(dx);
-                        params.y = downY + Math.round(dy);
+                        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+                        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+                        params.x = clampInt(downX + Math.round(dx), 0, Math.max(0, screenWidth - params.width));
+                        params.y = clampInt(downY + Math.round(dy), 0, Math.max(0, screenHeight - dp(80)));
                         windowManager.updateViewLayout(overlay, params);
                         return true;
                     case MotionEvent.ACTION_UP:
-                        if (!moved && collapsed) setCollapsed(false);
-                        else if (!moved) v.performClick();
+                        if (moved) saveOverlayPosition();
+                        else if (collapsed) setCollapsed(false);
+                        else v.performClick();
                         return true;
                     default:
                         return false;
@@ -399,6 +453,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         String clean = value.replace('\n', ' ').trim();
         if (clean.length() <= max) return clean;
         return clean.substring(0, Math.max(1, max - 1)) + "…";
+    }
+
+    private static int clampInt(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private int dp(int value) {
