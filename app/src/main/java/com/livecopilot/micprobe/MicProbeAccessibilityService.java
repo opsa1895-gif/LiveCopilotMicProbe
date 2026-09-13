@@ -25,6 +25,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private static final long SEMANTIC_CONTEXT_IDLE_RESET_MS = 45_000L;
     private static final long SEMANTIC_MIN_GAP_MS = 6_000L;
     private static final long SEMANTIC_FOCUS_MAX_AGE_MS = 12_000L;
+    private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     private static final int SEMANTIC_CONTEXT_TURNS = 6;
 
     private WindowManager windowManager;
@@ -61,6 +62,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private long lastSemanticTranscriptAtMs;
     private long semanticAnswerBaselineMs;
     private long activeSemanticRequestId = -1L;
+
+    // Hidden diagnostics only. These are deliberately not shown in the normal overlay.
+    private long lastVoiceEndAtMs;
+    private long thinkingStartedAtMs;
+    private long lastSttLatencyMs = -1L;
+    private long lastFirstReplyLatencyMs = -1L;
+    private long lastStylesLatencyMs = -1L;
+    private long lastSemanticLatencyMs = -1L;
 
     @Override
     protected void onServiceConnected() {
@@ -120,9 +129,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 answerText.setAlpha(0.55f);
             }
         } else {
+            lastVoiceEndAtMs = System.currentTimeMillis();
             aiStatus = "Обработвам…";
         }
         renderStatus();
+        renderDebug();
     }
 
     @Override
@@ -136,9 +147,16 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     @Override
     public void onTranscript(String transcript) {
         String clean = transcript == null ? "" : transcript.replace('\n', ' ').trim();
+        long now = System.currentTimeMillis();
+        if (!clean.isEmpty()
+                && lastVoiceEndAtMs > 0L
+                && now >= lastVoiceEndAtMs
+                && now - lastVoiceEndAtMs <= LATENCY_SAMPLE_MAX_AGE_MS) {
+            lastSttLatencyMs = now - lastVoiceEndAtMs;
+        }
+
         lastTranscript = clean;
         if (!clean.isEmpty()) {
-            long now = System.currentTimeMillis();
             if (semanticFallback != null && activeSemanticRequestId >= 0L) {
                 semanticFallback.invalidate();
                 activeSemanticRequestId = -1L;
@@ -164,20 +182,47 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             if (semanticFallback != null) semanticFallback.invalidate();
             activeSemanticRequestId = -1L;
             pendingSemanticFocus = "";
+
+            long now = System.currentTimeMillis();
+            boolean primaryOnly = hasText(replies.direct)
+                    && !hasText(replies.sarcastic)
+                    && !hasText(replies.funny)
+                    && !hasText(replies.calm);
+            if (thinkingStartedAtMs > 0L
+                    && now >= thinkingStartedAtMs
+                    && now - thinkingStartedAtMs <= LATENCY_SAMPLE_MAX_AGE_MS) {
+                long elapsed = now - thinkingStartedAtMs;
+                if (primaryOnly) {
+                    lastFirstReplyLatencyMs = elapsed;
+                } else {
+                    if (lastFirstReplyLatencyMs < 0L) lastFirstReplyLatencyMs = elapsed;
+                    lastStylesLatencyMs = elapsed;
+                    thinkingStartedAtMs = 0L;
+                }
+            }
+
             currentReplies = replies;
-            answerUpdatedAtMs = System.currentTimeMillis();
+            answerUpdatedAtMs = now;
             if (answerText != null) answerText.setAlpha(1f);
             if (collapsed && headerText != null) headerText.setText("AI •");
             renderSelectedReply();
+            renderDebug();
         });
     }
 
     @Override
     public void onStatus(String status) {
         String raw = status == null ? "" : status.trim();
+        String lower = raw.toLowerCase(Locale.ROOT);
+        if (lower.contains("мисля") || lower.contains("генерирам")) {
+            thinkingStartedAtMs = System.currentTimeMillis();
+            lastFirstReplyLatencyMs = -1L;
+            lastStylesLatencyMs = -1L;
+        }
         aiStatus = simplifyStatus(raw);
         getMainExecutor().execute(() -> {
             renderStatus();
+            renderDebug();
             if (isListeningStatus(raw)) scheduleSemanticFallbackIfNeeded();
         });
     }
@@ -230,12 +275,19 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (engine == null || !engine.isRunning() || replies == null) return;
         if (answerUpdatedAtMs > semanticAnswerBaselineMs) return;
 
+        long now = System.currentTimeMillis();
+        if (lastSemanticRequestAtMs > 0L
+                && now >= lastSemanticRequestAtMs
+                && now - lastSemanticRequestAtMs <= LATENCY_SAMPLE_MAX_AGE_MS) {
+            lastSemanticLatencyMs = now - lastSemanticRequestAtMs;
+        }
         currentReplies = replies;
-        answerUpdatedAtMs = System.currentTimeMillis();
+        answerUpdatedAtMs = now;
         if (answerText != null) answerText.setAlpha(1f);
         if (collapsed && headerText != null) headerText.setText("AI •");
         renderSelectedReply();
         activeSemanticRequestId = -1L;
+        renderDebug();
     }
 
     private String buildSemanticContext() {
@@ -322,7 +374,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         overlay.addView(answerText);
 
         debugText = text("", 10, Color.LTGRAY);
-        debugText.setMaxLines(4);
+        debugText.setMaxLines(5);
         debugText.setEllipsize(TextUtils.TruncateAt.END);
         debugText.setPadding(0, dp(6), 0, 0);
         debugText.setVisibility(View.GONE);
@@ -396,6 +448,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             lastSemanticRequestAtMs = 0L;
             lastSemanticTranscriptAtMs = 0L;
             semanticTurns.clear();
+            resetLatencyMetrics();
             if (answerText != null) {
                 answerText.setText("Слушам разговора…");
                 answerText.setAlpha(0.75f);
@@ -431,6 +484,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         answerText.setAlpha(1f);
     }
 
+    private static boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
+    }
+
     private static String selectedReply(OpenAiCopilotClient.Replies replies, int index) {
         switch (index) {
             case 1: return replies.sarcastic;
@@ -461,7 +518,26 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 : String.format(Locale.US, "mic %.0f dB%s", latestSnapshot.dbfs,
                 latestSnapshot.clientSilenced ? " • BLOCKED" : "");
         String heard = lastTranscript.isEmpty() ? "" : "\nЧух: " + shorten(lastTranscript, 115);
-        debugText.setText(app + " • " + mic + heard);
+        String latency = "\n~end→text " + latencyLabel(lastSttLatencyMs)
+                + " • text→1st " + latencyLabel(lastFirstReplyLatencyMs)
+                + " • styles " + latencyLabel(lastStylesLatencyMs)
+                + " • sem " + latencyLabel(lastSemanticLatencyMs);
+        debugText.setText(app + " • " + mic + heard + latency);
+    }
+
+    private void resetLatencyMetrics() {
+        lastVoiceEndAtMs = 0L;
+        thinkingStartedAtMs = 0L;
+        lastSttLatencyMs = -1L;
+        lastFirstReplyLatencyMs = -1L;
+        lastStylesLatencyMs = -1L;
+        lastSemanticLatencyMs = -1L;
+    }
+
+    private static String latencyLabel(long ms) {
+        if (ms < 0L) return "—";
+        if (ms < 1_000L) return ms + "ms";
+        return String.format(Locale.US, "%.1fs", ms / 1000.0);
     }
 
     private void setCollapsed(boolean value) {
