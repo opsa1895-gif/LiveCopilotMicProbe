@@ -26,6 +26,23 @@ public class AudioPreprocessorTest {
 
         assertTrue("strong speech should not clip", peak(output) < 0.99);
         assertTrue("strong speech should not be boosted dramatically", rms(output) < rms(input) * 1.25);
+        assertTrue("strong speech should not be crushed", rms(output) > rms(input) * 0.65);
+    }
+
+    @Test
+    public void quietPartStillGetsHelpWhenSameChunkContainsLoudSpeaker() {
+        int sampleRate = 16_000;
+        short[] quiet = sine(sampleRate, 440.0, 0.018, 1.0);
+        short[] loud = sine(sampleRate, 440.0, 0.22, 1.0);
+        short[] input = concat(quiet, loud);
+
+        short[] output = AudioPreprocessor.prepare(input, sampleRate);
+        short[] quietOut = slice(output, 0, sampleRate);
+        short[] loudOut = slice(output, sampleRate, output.length);
+
+        assertTrue("quiet speaker should be boosted inside a mixed chunk", rms(quietOut) > rms(quiet) * 1.7);
+        assertTrue("loud speaker should remain usable", rms(loudOut) > rms(loud) * 0.65);
+        assertTrue("mixed chunk must not clip", peak(output) < 0.99);
     }
 
     @Test
@@ -54,6 +71,21 @@ public class AudioPreprocessorTest {
         for (int i = 0; i < count; i++) {
             out[i] = toPcm(Math.sin(2.0 * Math.PI * hz * i / sampleRate) * amplitude);
         }
+        return out;
+    }
+
+    private static short[] concat(short[] a, short[] b) {
+        short[] out = new short[a.length + b.length];
+        System.arraycopy(a, 0, out, 0, a.length);
+        System.arraycopy(b, 0, out, a.length, b.length);
+        return out;
+    }
+
+    private static short[] slice(short[] input, int start, int end) {
+        int safeStart = Math.max(0, Math.min(start, input.length));
+        int safeEnd = Math.max(safeStart, Math.min(end, input.length));
+        short[] out = new short[safeEnd - safeStart];
+        System.arraycopy(input, safeStart, out, 0, out.length);
         return out;
     }
 
