@@ -71,6 +71,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private long lastSemanticRequestAtMs;
     private long lastSemanticTranscriptAtMs;
     private long semanticAnswerBaselineMs;
+    private long semanticPrimaryAppliedAtMs;
     private long activeSemanticRequestId = -1L;
 
     // Hidden diagnostics only. These are deliberately not shown in the normal overlay.
@@ -238,6 +239,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             if (semanticFallback != null && activeSemanticRequestId >= 0L) {
                 semanticFallback.invalidate();
                 activeSemanticRequestId = -1L;
+                semanticPrimaryAppliedAtMs = 0L;
             }
             if ((lastSemanticTranscriptAtMs > 0L
                     && now - lastSemanticTranscriptAtMs >= SEMANTIC_CONTEXT_IDLE_RESET_MS)
@@ -267,6 +269,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
             if (semanticFallback != null) semanticFallback.invalidate();
             activeSemanticRequestId = -1L;
+            semanticPrimaryAppliedAtMs = 0L;
             pendingSemanticFocus = "";
 
             long now = System.currentTimeMillis();
@@ -352,6 +355,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         lastSemanticRequestAtMs = now;
         semanticAnswerBaselineMs = answerUpdatedAtMs;
+        semanticPrimaryAppliedAtMs = 0L;
         activeSemanticRequestId = semanticFallback.request(buildSemanticContext(), focus);
         pendingSemanticFocus = "";
     }
@@ -359,20 +363,46 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private void applySemanticReply(long requestId, OpenAiCopilotClient.Replies replies) {
         if (requestId < 0L || requestId != activeSemanticRequestId) return;
         if (engine == null || !engine.isRunning() || replies == null) return;
-        if (answerUpdatedAtMs > semanticAnswerBaselineMs) return;
+
+        boolean primaryOnly = hasText(replies.direct)
+                && !hasText(replies.sarcastic)
+                && !hasText(replies.funny)
+                && !hasText(replies.calm);
+
+        if (primaryOnly) {
+            if (answerUpdatedAtMs > semanticAnswerBaselineMs) return;
+        } else if (semanticPrimaryAppliedAtMs > 0L) {
+            if (answerUpdatedAtMs != semanticPrimaryAppliedAtMs) return;
+        } else if (answerUpdatedAtMs > semanticAnswerBaselineMs) {
+            return;
+        }
 
         long now = System.currentTimeMillis();
         if (lastSemanticRequestAtMs > 0L
                 && now >= lastSemanticRequestAtMs
                 && now - lastSemanticRequestAtMs <= LATENCY_SAMPLE_MAX_AGE_MS) {
-            lastSemanticLatencyMs = now - lastSemanticRequestAtMs;
+            long elapsed = now - lastSemanticRequestAtMs;
+            if (primaryOnly) {
+                lastSemanticLatencyMs = elapsed;
+                lastFirstReplyLatencyMs = elapsed;
+            } else {
+                if (lastFirstReplyLatencyMs < 0L) lastFirstReplyLatencyMs = elapsed;
+                lastStylesLatencyMs = elapsed;
+            }
         }
+
         currentReplies = replies;
         answerUpdatedAtMs = now;
         if (answerText != null) answerText.setAlpha(1f);
         if (collapsed && headerText != null) headerText.setText("AI •");
         renderSelectedReply();
-        activeSemanticRequestId = -1L;
+
+        if (primaryOnly) {
+            semanticPrimaryAppliedAtMs = now;
+        } else {
+            activeSemanticRequestId = -1L;
+            semanticPrimaryAppliedAtMs = 0L;
+        }
         renderDebug();
     }
 
@@ -514,6 +544,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             pausedAtMs = System.currentTimeMillis();
             if (semanticFallback != null) semanticFallback.invalidate();
             activeSemanticRequestId = -1L;
+            semanticPrimaryAppliedAtMs = 0L;
             pendingSemanticFocus = "";
             realtimeTurnActive = false;
             clearFallbackTurnAudio();
@@ -540,6 +571,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             pendingSemanticAtMs = 0L;
             lastSemanticRequestAtMs = 0L;
             lastSemanticTranscriptAtMs = 0L;
+            semanticAnswerBaselineMs = 0L;
+            semanticPrimaryAppliedAtMs = 0L;
+            activeSemanticRequestId = -1L;
             semanticTurns.clear();
             resetLatencyMetrics();
             if (answerText != null) {
