@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.16.0-realtime-audio"
+        versionCode = 17
+        versionName = "0.17.0-realtime-recovery"
     }
 
     compileOptions {

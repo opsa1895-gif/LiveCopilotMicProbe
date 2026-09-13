@@ -10,12 +10,16 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import okhttp3.MediaType;
+import okhttp3.MultipartBody;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
+import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
@@ -28,14 +32,20 @@ final class RealtimeTranscriptionClient {
     }
 
     private static final String WS_URL = "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe";
+    private static final String FILE_STT_URL = "https://api.openai.com/v1/audio/transcriptions";
     private static final int REALTIME_SAMPLE_RATE = 24_000;
     private static final int MIN_COMMIT_SAMPLES = REALTIME_SAMPLE_RATE / 10; // 100 ms
+    private static final int MAX_BACKUP_SAMPLES = 16_000 * 12; // bounded ~12 s at capture rate
+    private static final long COMMIT_TIMEOUT_MS = 9_000L;
 
     private final Context context;
     private final Listener listener;
     private final OkHttpClient httpClient;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private final ExecutorService fallbackExecutor = Executors.newSingleThreadExecutor();
     private final StreamingAudioPreprocessor streamingPreprocessor = new StreamingAudioPreprocessor();
+    private final PcmTurnBuffer activeBackup = new PcmTurnBuffer(MAX_BACKUP_SAMPLES);
+    private final PcmTurnBuffer pendingBackup = new PcmTurnBuffer(MAX_BACKUP_SAMPLES);
 
     private WebSocket socket;
     private boolean wanted;
@@ -48,6 +58,10 @@ final class RealtimeTranscriptionClient {
     private long serial;
     private long activeTurnSerial;
     private long committedTurnSerial;
+    private long pendingBackupTurnSerial;
+    private long generation;
+    private int activeBackupSampleRate = 16_000;
+    private int pendingBackupSampleRate = 16_000;
     private int sentSamples;
     private StringBuilder partial = new StringBuilder();
 
@@ -57,22 +71,27 @@ final class RealtimeTranscriptionClient {
         this.httpClient = new OkHttpClient.Builder()
                 .pingInterval(20, TimeUnit.SECONDS)
                 .connectTimeout(12, TimeUnit.SECONDS)
+                .readTimeout(40, TimeUnit.SECONDS)
+                .writeTimeout(40, TimeUnit.SECONDS)
                 .build();
     }
 
     synchronized void start() {
         if (closed) return;
+        if (!wanted) generation++;
         wanted = true;
         if (socket == null) connectLocked();
     }
 
     synchronized void stop() {
+        generation++;
         wanted = false;
         ready = false;
         turnActive = false;
         awaitingCompletion = false;
         sentSamples = 0;
         partial.setLength(0);
+        clearBackupsLocked();
         WebSocket old = socket;
         socket = null;
         if (old != null) {
@@ -87,12 +106,17 @@ final class RealtimeTranscriptionClient {
         activeTurnSerial = ++serial;
         sentSamples = 0;
         partial.setLength(0);
+        activeBackup.clear();
+        activeBackupSampleRate = sourceSampleRate;
         streamingPreprocessor.reset(sourceSampleRate);
         return true;
     }
 
     synchronized boolean append(short[] pcm16, int sourceSampleRate) {
         if (!turnActive || !ready || socket == null || pcm16 == null || pcm16.length == 0) return false;
+
+        if (sourceSampleRate == activeBackupSampleRate) activeBackup.append(pcm16);
+
         short[] cleaned = streamingPreprocessor.process(pcm16, sourceSampleRate);
         short[] realtime = PcmResampler.resample(cleaned, sourceSampleRate, REALTIME_SAMPLE_RATE);
         if (realtime.length == 0) return true;
@@ -123,6 +147,7 @@ final class RealtimeTranscriptionClient {
         turnActive = false;
         if (!ready || socket == null || sentSamples < MIN_COMMIT_SAMPLES) {
             sentSamples = 0;
+            activeBackup.clear();
             sendClearLocked();
             return false;
         }
@@ -137,6 +162,7 @@ final class RealtimeTranscriptionClient {
         if (!sent) {
             sentSamples = 0;
             ready = false;
+            activeBackup.clear();
             listener.onState("fallback");
             return false;
         }
@@ -144,6 +170,17 @@ final class RealtimeTranscriptionClient {
         committedTurnSerial = activeTurnSerial;
         awaitingCompletion = true;
         sentSamples = 0;
+
+        pendingBackup.clear();
+        pendingBackup.append(activeBackup.copy());
+        pendingBackupSampleRate = activeBackupSampleRate;
+        pendingBackupTurnSerial = committedTurnSerial;
+        activeBackup.clear();
+
+        long timeoutTurn = committedTurnSerial;
+        long timeoutGeneration = generation;
+        scheduler.schedule(() -> handleCommitTimeout(timeoutTurn, timeoutGeneration),
+                COMMIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         return true;
     }
 
@@ -156,6 +193,7 @@ final class RealtimeTranscriptionClient {
         closed = true;
         stop();
         scheduler.shutdownNow();
+        fallbackExecutor.shutdownNow();
         try { httpClient.dispatcher().executorService().shutdown(); } catch (Throwable ignored) {}
         try { httpClient.connectionPool().evictAll(); } catch (Throwable ignored) {}
     }
@@ -220,49 +258,174 @@ final class RealtimeTranscriptionClient {
         if ("conversation.item.input_audio_transcription.completed".equals(type)) {
             String transcript = clean(event.optString("transcript", ""));
             long turn;
+            long fallbackGeneration = -1L;
             synchronized (this) {
                 if (ws != socket || !awaitingCompletion) return;
                 turn = committedTurnSerial;
                 awaitingCompletion = false;
                 partial.setLength(0);
+                if (!transcript.isEmpty()) {
+                    clearPendingBackupLocked(turn);
+                } else {
+                    fallbackGeneration = generation;
+                }
             }
             if (!transcript.isEmpty()) listener.onFinal(turn, transcript);
+            else recoverCommittedTurn(turn, fallbackGeneration, "empty");
             return;
         }
 
         if ("error".equals(type)) {
+            long recoveryTurn = -1L;
+            long recoveryGeneration = -1L;
             synchronized (this) {
                 if (ws != socket) return;
+                if (awaitingCompletion) {
+                    recoveryTurn = committedTurnSerial;
+                    recoveryGeneration = generation;
+                }
                 ready = false;
                 turnActive = false;
                 awaitingCompletion = false;
             }
             listener.onState("fallback");
+            if (recoveryTurn > 0L) recoverCommittedTurn(recoveryTurn, recoveryGeneration, "server_error");
         }
     }
 
     private void handleClosed(WebSocket ws) {
+        long recoveryTurn = -1L;
+        long recoveryGeneration = -1L;
         synchronized (this) {
             if (ws != socket) return;
+            if (awaitingCompletion) {
+                recoveryTurn = committedTurnSerial;
+                recoveryGeneration = generation;
+            }
             socket = null;
             ready = false;
             turnActive = false;
             awaitingCompletion = false;
         }
         listener.onState("fallback");
+        if (recoveryTurn > 0L) recoverCommittedTurn(recoveryTurn, recoveryGeneration, "closed");
         scheduleReconnect();
     }
 
     private void handleFailure(WebSocket ws) {
+        long recoveryTurn = -1L;
+        long recoveryGeneration = -1L;
         synchronized (this) {
             if (ws != socket) return;
+            if (awaitingCompletion) {
+                recoveryTurn = committedTurnSerial;
+                recoveryGeneration = generation;
+            }
             socket = null;
             ready = false;
             turnActive = false;
             awaitingCompletion = false;
         }
         listener.onState("fallback");
+        if (recoveryTurn > 0L) recoverCommittedTurn(recoveryTurn, recoveryGeneration, "failure");
         scheduleReconnect();
+    }
+
+    private void handleCommitTimeout(long turn, long timeoutGeneration) {
+        WebSocket old;
+        synchronized (this) {
+            if (closed || !wanted || generation != timeoutGeneration) return;
+            if (!awaitingCompletion || committedTurnSerial != turn) return;
+            awaitingCompletion = false;
+            ready = false;
+            turnActive = false;
+            old = socket;
+            socket = null;
+        }
+
+        listener.onState("fallback");
+        if (old != null) {
+            try { old.close(1011, "transcription_timeout"); } catch (Throwable ignored) {}
+        }
+        recoverCommittedTurn(turn, timeoutGeneration, "timeout");
+        scheduleReconnect();
+    }
+
+    private void recoverCommittedTurn(long turn, long recoveryGeneration, String reason) {
+        final short[] audio;
+        final int sampleRate;
+        synchronized (this) {
+            if (turn <= 0L || pendingBackupTurnSerial != turn || pendingBackup.size() == 0) return;
+            audio = pendingBackup.copy();
+            sampleRate = pendingBackupSampleRate;
+            clearPendingBackupLocked(turn);
+        }
+
+        listener.onState("file_fallback");
+        fallbackExecutor.execute(() -> {
+            String transcript = "";
+            try {
+                short[] prepared = AudioPreprocessor.prepare(audio, sampleRate);
+                if (prepared.length > 0) transcript = fallbackTranscribe(prepared, sampleRate);
+            } catch (Throwable ignored) {}
+
+            boolean deliver;
+            synchronized (RealtimeTranscriptionClient.this) {
+                deliver = !closed && wanted && generation == recoveryGeneration;
+            }
+            if (!deliver) return;
+
+            if (!transcript.isEmpty()) {
+                listener.onFinal(turn, transcript);
+            } else {
+                listener.onState("fallback_failed");
+            }
+        });
+    }
+
+    private String fallbackTranscribe(short[] samples, int sampleRate) throws Exception {
+        String key = SecretStore.loadApiKey(context);
+        if (key.isEmpty()) return "";
+
+        byte[] wav = wav(samples, sampleRate);
+        MediaType wavType = MediaType.get("audio/wav");
+        RequestBody fileBody = RequestBody.create(wav, wavType);
+        MultipartBody.Builder multipart = new MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("model", "gpt-transcribe")
+                .addFormDataPart("language", "bg")
+                .addFormDataPart("prompt", fallbackPrompt())
+                .addFormDataPart("response_format", "json")
+                .addFormDataPart("file", "live.wav", fileBody);
+
+        Request request = new Request.Builder()
+                .url(FILE_STT_URL)
+                .header("Authorization", "Bearer " + key)
+                .post(multipart.build())
+                .build();
+
+        try (Response response = httpClient.newCall(request).execute()) {
+            if (!response.isSuccessful() || response.body() == null) return "";
+            return clean(new JSONObject(response.body().string()).optString("text", ""));
+        }
+    }
+
+    private String fallbackPrompt() {
+        StringBuilder out = new StringBuilder(
+                "Български TikTok Live разговор. Транскрибирай точно бърза разговорна реч, имена, числа и кратки въпроси. Не измисляй несигурни думи."
+        );
+        List<String> keywords = keywordHints();
+        if (!keywords.isEmpty()) {
+            out.append(" Възможни имена и термини: ");
+            for (int i = 0; i < keywords.size(); i++) {
+                if (i > 0) out.append(", ");
+                out.append(keywords.get(i));
+                if (out.length() >= 600) break;
+            }
+            out.append('.');
+        }
+        if (out.length() > 650) return out.substring(0, 650);
+        return out.toString();
     }
 
     private synchronized void scheduleReconnect() {
@@ -331,6 +494,41 @@ final class RealtimeTranscriptionClient {
             event.put("type", "input_audio_buffer.clear");
             socket.send(event.toString());
         } catch (Throwable ignored) {}
+    }
+
+    private void clearPendingBackupLocked(long turn) {
+        if (pendingBackupTurnSerial != turn) return;
+        pendingBackup.clear();
+        pendingBackupSampleRate = 16_000;
+        pendingBackupTurnSerial = 0L;
+    }
+
+    private void clearBackupsLocked() {
+        activeBackup.clear();
+        pendingBackup.clear();
+        activeBackupSampleRate = 16_000;
+        pendingBackupSampleRate = 16_000;
+        pendingBackupTurnSerial = 0L;
+    }
+
+    private static byte[] wav(short[] samples, int sampleRate) {
+        int dataBytes = samples.length * 2;
+        ByteBuffer b = ByteBuffer.allocate(44 + dataBytes).order(ByteOrder.LITTLE_ENDIAN);
+        b.put(new byte[]{'R','I','F','F'});
+        b.putInt(36 + dataBytes);
+        b.put(new byte[]{'W','A','V','E'});
+        b.put(new byte[]{'f','m','t',' '});
+        b.putInt(16);
+        b.putShort((short) 1);
+        b.putShort((short) 1);
+        b.putInt(sampleRate);
+        b.putInt(sampleRate * 2);
+        b.putShort((short) 2);
+        b.putShort((short) 16);
+        b.put(new byte[]{'d','a','t','a'});
+        b.putInt(dataBytes);
+        for (short sample : samples) b.putShort(sample);
+        return b.array();
     }
 
     private static byte[] toLittleEndian(short[] samples) {
