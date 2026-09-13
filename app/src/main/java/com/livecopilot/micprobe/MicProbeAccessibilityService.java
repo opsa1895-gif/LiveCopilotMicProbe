@@ -25,23 +25,16 @@ import java.util.Deque;
 import java.util.Locale;
 
 public class MicProbeAccessibilityService extends AccessibilityService implements MicProbeEngine.Listener {
-    private static final long ANSWER_INTERVAL_MS = 10_000L;
-    private static final long PARTIAL_UI_INTERVAL_MS = 1_200L;
-    private static final int MAX_CONTEXT_ITEMS = 8;
+    private static final long ANSWER_INTERVAL_MS = 4_000L;
+    private static final long PARTIAL_COMMIT_MS = 1_600L;
+    private static final int MAX_CONTEXT_ITEMS = 10;
 
     private WindowManager windowManager;
     private WindowManager.LayoutParams params;
     private LinearLayout overlay;
-    private TextView statusText;
-    private TextView appText;
-    private TextView meterText;
-    private TextView transcriptText;
-    private TextView directText;
-    private TextView sarcasticText;
-    private TextView funnyText;
-    private TextView calmText;
-    private Button startButton;
-    private Button stopButton;
+    private TextView statusText, appText, meterText, transcriptText;
+    private TextView directText, sarcasticText, funnyText, calmText;
+    private Button startButton, stopButton;
 
     private MicProbeEngine engine;
     private SpeechRecognizer recognizer;
@@ -51,47 +44,46 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private String foregroundPackage = "неизвестно";
 
     private final Deque<String> contextItems = new ArrayDeque<>();
-    private boolean newSpeechSinceAnswer;
-    private long lastPartialUiMs;
+    private String latestPartial = "";
+    private String lastCommitted = "";
+    private String lastAnsweredFocus = "";
+    private long lastPartialCommitMs;
     private long lastAnswerMs;
-    private final Runnable answerTicker = new Runnable() {
+    private boolean contextDirty;
+
+    private final Runnable liveTicker = new Runnable() {
         @Override public void run() {
             if (!recognitionWanted || overlay == null) return;
+            long now = SystemClock.elapsedRealtime();
+            if (!latestPartial.isEmpty() && now - lastPartialCommitMs >= PARTIAL_COMMIT_MS) {
+                commitSpeech(latestPartial, false);
+                lastPartialCommitMs = now;
+            }
             maybeGenerateAnswer();
-            overlay.postDelayed(this, 1_000L);
+            overlay.postDelayed(this, 500L);
         }
     };
 
-    @Override
-    protected void onServiceConnected() {
+    @Override protected void onServiceConnected() {
         super.onServiceConnected();
         engine = new MicProbeEngine(this, this);
         setupSpeechRecognizer();
         showOverlay();
     }
 
-    @Override
-    public void onAccessibilityEvent(AccessibilityEvent event) {
+    @Override public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null || event.getPackageName() == null) return;
         String pkg = event.getPackageName().toString();
         if (!pkg.equals(getPackageName())) foregroundPackage = pkg;
         if (isTikTokPackage(pkg) && engine != null) engine.markTikTokSeen();
-        if (appText != null) {
-            appText.setText(isTikTokPackage(foregroundPackage)
-                    ? "TikTok активен ✓"
-                    : "Foreground: " + foregroundPackage);
-        }
+        if (appText != null) appText.setText(isTikTokPackage(foregroundPackage) ? "TikTok активен ✓" : "Foreground: " + foregroundPackage);
     }
 
     @Override public void onInterrupt() {}
 
-    @Override
-    public void onDestroy() {
+    @Override public void onDestroy() {
         stopRecognition();
-        if (recognizer != null) {
-            try { recognizer.destroy(); } catch (Throwable ignored) {}
-            recognizer = null;
-        }
+        if (recognizer != null) { try { recognizer.destroy(); } catch (Throwable ignored) {} }
         if (engine != null && engine.isRunning()) engine.stop("service_destroyed");
         removeOverlay();
         super.onDestroy();
@@ -108,35 +100,39 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         recognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "bg-BG");
         recognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
         recognizerIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3);
+        recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L);
+        recognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 550L);
 
         recognizer.setRecognitionListener(new RecognitionListener() {
-            @Override public void onReadyForSpeech(Bundle params) { setAiStatus(countdownStatus()); }
-            @Override public void onBeginningOfSpeech() { setAiStatus("Чувам реч • пазя контекста"); }
+            @Override public void onReadyForSpeech(Bundle params) { setAiStatus("Слушам активно…"); }
+            @Override public void onBeginningOfSpeech() { setAiStatus("Чувам реч • обновявам контекста"); }
             @Override public void onRmsChanged(float rmsdB) {}
             @Override public void onBufferReceived(byte[] buffer) {}
-            @Override public void onEndOfSpeech() { setAiStatus("Записвам репликата в контекста…"); }
+            @Override public void onEndOfSpeech() { setAiStatus("Обработвам последната реплика…"); }
 
-            @Override
-            public void onError(int error) {
+            @Override public void onError(int error) {
                 if (!recognitionWanted) return;
-                long delay = (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) ? 300L : 750L;
-                scheduleRecognitionRestart(delay);
+                scheduleRecognitionRestart((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) ? 200L : 650L);
             }
 
-            @Override
-            public void onResults(Bundle results) {
+            @Override public void onResults(Bundle results) {
                 String best = bestText(results);
-                if (!best.isEmpty()) addContext(best);
-                if (recognitionWanted) scheduleRecognitionRestart(180L);
+                if (!best.isEmpty()) {
+                    latestPartial = best;
+                    commitSpeech(best, true);
+                }
+                if (recognitionWanted) scheduleRecognitionRestart(120L);
             }
 
-            @Override
-            public void onPartialResults(Bundle partialResults) {
+            @Override public void onPartialResults(Bundle partialResults) {
                 String best = bestText(partialResults);
+                if (best.isEmpty()) return;
+                latestPartial = best;
+                if (transcriptText != null) transcriptText.setText("Чувам: " + shorten(best, 100));
                 long now = SystemClock.elapsedRealtime();
-                if (!best.isEmpty() && transcriptText != null && now - lastPartialUiMs >= PARTIAL_UI_INTERVAL_MS) {
-                    lastPartialUiMs = now;
-                    transcriptText.setText("Чувам: " + shorten(best, 88));
+                if (now - lastPartialCommitMs >= PARTIAL_COMMIT_MS && isMeaningfullyDifferent(best, lastCommitted)) {
+                    commitSpeech(best, false);
+                    lastPartialCommitMs = now;
                 }
             }
 
@@ -148,90 +144,109 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (bundle == null) return "";
         ArrayList<String> list = bundle.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
         if (list == null || list.isEmpty() || list.get(0) == null) return "";
-        return list.get(0).trim();
+        return list.get(0).replace('\n', ' ').trim();
     }
 
-    private void addContext(String text) {
-        String clean = text.replace('\n', ' ').trim();
-        if (clean.isEmpty()) return;
-        if (!contextItems.isEmpty() && clean.equalsIgnoreCase(contextItems.peekLast())) return;
+    private void commitSpeech(String text, boolean isFinal) {
+        String clean = text == null ? "" : text.replace('\n', ' ').trim();
+        if (clean.length() < 3) return;
+        if (!isMeaningfullyDifferent(clean, lastCommitted)) return;
+
+        if (!contextItems.isEmpty() && isEvolutionOf(contextItems.peekLast(), clean)) {
+            contextItems.removeLast();
+        }
         contextItems.addLast(clean);
         while (contextItems.size() > MAX_CONTEXT_ITEMS) contextItems.removeFirst();
-        newSpeechSinceAnswer = true;
-        if (transcriptText != null) transcriptText.setText("Последно: " + shorten(clean, 92));
+
+        lastCommitted = clean;
+        contextDirty = true;
+        if (transcriptText != null) transcriptText.setText((isFinal ? "Последно: " : "В движение: ") + shorten(clean, 100));
+
+        if (isFinal && SystemClock.elapsedRealtime() - lastAnswerMs >= 1_500L) {
+            maybeGenerateAnswer();
+        }
+    }
+
+    private boolean isEvolutionOf(String oldText, String newText) {
+        if (oldText == null || newText == null) return false;
+        String a = normalize(oldText), b = normalize(newText);
+        if (a.isEmpty() || b.isEmpty()) return false;
+        return b.startsWith(a) || a.startsWith(b) || overlapRatio(a, b) > 0.72;
+    }
+
+    private boolean isMeaningfullyDifferent(String a, String b) {
+        String x = normalize(a), y = normalize(b);
+        if (x.isEmpty()) return false;
+        if (y.isEmpty()) return true;
+        if (x.equals(y)) return false;
+        if (x.length() > y.length() + 12 || y.length() > x.length() + 12) return true;
+        return overlapRatio(x, y) < 0.82;
+    }
+
+    private double overlapRatio(String a, String b) {
+        String[] aw = a.split("\\s+");
+        String[] bw = b.split("\\s+");
+        if (aw.length == 0 || bw.length == 0) return 0.0;
+        int common = 0;
+        for (String x : aw) {
+            for (String y : bw) {
+                if (x.equals(y)) { common++; break; }
+            }
+        }
+        return common / (double)Math.max(aw.length, bw.length);
+    }
+
+    private String normalize(String s) {
+        return s == null ? "" : s.toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N} ]", " ").replaceAll("\\s+", " ").trim();
     }
 
     private void startRecognitionLoop() {
         recognitionWanted = true;
-        contextItems.clear();
-        newSpeechSinceAnswer = false;
-        lastPartialUiMs = 0L;
-        lastAnswerMs = SystemClock.elapsedRealtime();
-        if (recognizer == null || recognizerIntent == null) {
-            setAiStatus("На този телефон няма наличен Android SpeechRecognizer.");
-            return;
-        }
-        try { recognizer.startListening(recognizerIntent); }
-        catch (Throwable t) { setAiStatus("Speech recognition не стартира."); }
-        if (overlay != null) {
-            overlay.removeCallbacks(answerTicker);
-            overlay.postDelayed(answerTicker, 1_000L);
-        }
+        contextItems.clear(); latestPartial = ""; lastCommitted = ""; lastAnsweredFocus = "";
+        contextDirty = false; lastPartialCommitMs = 0L; lastAnswerMs = 0L;
+        if (recognizer == null || recognizerIntent == null) { setAiStatus("Няма Android SpeechRecognizer на този телефон."); return; }
+        try { recognizer.startListening(recognizerIntent); } catch (Throwable t) { setAiStatus("Speech recognition не стартира."); }
+        if (overlay != null) { overlay.removeCallbacks(liveTicker); overlay.postDelayed(liveTicker, 500L); }
     }
 
     private void scheduleRecognitionRestart(long delayMs) {
         if (!recognitionWanted || restartingRecognition) return;
         restartingRecognition = true;
-        getMainExecutor().execute(() -> {
-            if (!recognitionWanted) { restartingRecognition = false; return; }
-            if (overlay != null) overlay.postDelayed(() -> {
-                restartingRecognition = false;
-                if (!recognitionWanted || recognizer == null) return;
-                try { recognizer.startListening(recognizerIntent); }
-                catch (Throwable ignored) { scheduleRecognitionRestart(800L); }
-            }, delayMs);
-        });
+        if (overlay == null) return;
+        overlay.postDelayed(() -> {
+            restartingRecognition = false;
+            if (!recognitionWanted || recognizer == null) return;
+            try { recognizer.startListening(recognizerIntent); }
+            catch (Throwable ignored) { scheduleRecognitionRestart(650L); }
+        }, delayMs);
     }
 
     private void stopRecognition() {
-        recognitionWanted = false;
-        restartingRecognition = false;
-        if (overlay != null) overlay.removeCallbacks(answerTicker);
-        if (recognizer != null) {
-            try { recognizer.cancel(); } catch (Throwable ignored) {}
-        }
+        recognitionWanted = false; restartingRecognition = false;
+        if (overlay != null) overlay.removeCallbacks(liveTicker);
+        if (recognizer != null) { try { recognizer.cancel(); } catch (Throwable ignored) {} }
     }
 
     private void maybeGenerateAnswer() {
         long now = SystemClock.elapsedRealtime();
-        long elapsed = now - lastAnswerMs;
-        if (elapsed < ANSWER_INTERVAL_MS) {
-            setAiStatus(countdownStatus());
-            return;
-        }
-        lastAnswerMs = now;
-        if (!newSpeechSinceAnswer || contextItems.isEmpty()) {
-            setAiStatus("Слушам • чакам нова смислена реплика");
-            return;
-        }
-        newSpeechSinceAnswer = false;
+        if (!contextDirty || contextItems.isEmpty()) return;
+        if (lastAnswerMs != 0L && now - lastAnswerMs < ANSWER_INTERVAL_MS) return;
+
         String focus = contextItems.peekLast();
+        if (!isMeaningfullyDifferent(focus, lastAnsweredFocus) && contextItems.size() < 2) return;
+
         String context = buildContext();
         ReplyGenerator.Replies r = ReplyGenerator.generate(context, focus);
         if (directText != null) directText.setText("ТОЧЕН: " + r.direct);
         if (sarcasticText != null) sarcasticText.setText("САРКАЗЪМ: " + r.sarcastic);
         if (funnyText != null) funnyText.setText("ЗАБАВЕН: " + r.funny);
         if (calmText != null) calmText.setText("СПОКОЕН: " + r.calm);
-        if (transcriptText != null) transcriptText.setText("Контекст: " + shorten(context, 105));
-        setAiStatus("Нови отговори ✓ • следващи след ~10 сек");
-    }
+        if (transcriptText != null) transcriptText.setText("Фокус: " + shorten(focus, 100));
+        setAiStatus("Нови отговори ✓ • слушам нататък");
 
-    private String countdownStatus() {
-        long remain = Math.max(0L, ANSWER_INTERVAL_MS - (SystemClock.elapsedRealtime() - lastAnswerMs));
-        long sec = (remain + 999L) / 1000L;
-        return newSpeechSinceAnswer
-                ? "Пазя контекста • отговор след " + sec + " сек"
-                : "Слушам • чакам реплика";
+        lastAnsweredFocus = focus;
+        lastAnswerMs = now;
+        contextDirty = false;
     }
 
     private String buildContext() {
@@ -247,96 +262,56 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     private void showOverlay() {
         if (overlay != null) return;
-        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        windowManager = (WindowManager)getSystemService(WINDOW_SERVICE);
         overlay = new LinearLayout(this);
         overlay.setOrientation(LinearLayout.VERTICAL);
         overlay.setPadding(dp(12), dp(10), dp(12), dp(10));
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.argb(230, 18, 18, 22));
-        bg.setCornerRadius(dp(16));
-        bg.setStroke(dp(1), Color.argb(140, 255, 255, 255));
+        bg.setColor(Color.argb(230, 18, 18, 22)); bg.setCornerRadius(dp(16)); bg.setStroke(dp(1), Color.argb(140,255,255,255));
         overlay.setBackground(bg);
 
-        TextView header = text("LIVE COPILOT • v0.3", 14, Color.WHITE);
+        TextView header = text("LIVE COPILOT • v0.4", 14, Color.WHITE);
         header.setTypeface(header.getTypeface(), android.graphics.Typeface.BOLD);
         overlay.addView(header);
-        appText = text("Foreground: неизвестно", 11, Color.LTGRAY);
-        overlay.addView(appText);
-        statusText = text("START → контекст + нови отговори на ~10 сек", 12, Color.WHITE);
-        statusText.setPadding(0, dp(6), 0, dp(4));
-        overlay.addView(statusText);
-        meterText = text("Mic: -- dBFS", 11, Color.LTGRAY);
-        overlay.addView(meterText);
-        transcriptText = text("Контекст: —", 12, Color.rgb(210, 220, 255));
-        transcriptText.setMaxLines(2);
-        transcriptText.setPadding(0, dp(7), 0, dp(6));
-        overlay.addView(transcriptText);
+        appText = text("Foreground: неизвестно", 11, Color.LTGRAY); overlay.addView(appText);
+        statusText = text("START → жив контекст + отговори при промяна", 12, Color.WHITE); statusText.setPadding(0,dp(6),0,dp(4)); overlay.addView(statusText);
+        meterText = text("Mic: -- dBFS", 11, Color.LTGRAY); overlay.addView(meterText);
+        transcriptText = text("Фокус: —", 12, Color.rgb(210,220,255)); transcriptText.setMaxLines(2); transcriptText.setPadding(0,dp(7),0,dp(6)); overlay.addView(transcriptText);
 
-        directText = replyBox("ТОЧЕН: —");
-        sarcasticText = replyBox("САРКАЗЪМ: —");
-        funnyText = replyBox("ЗАБАВЕН: —");
-        calmText = replyBox("СПОКОЕН: —");
-        overlay.addView(directText);
-        overlay.addView(sarcasticText);
-        overlay.addView(funnyText);
-        overlay.addView(calmText);
+        directText = replyBox("ТОЧЕН: —"); sarcasticText = replyBox("САРКАЗЪМ: —"); funnyText = replyBox("ЗАБАВЕН: —"); calmText = replyBox("СПОКОЕН: —");
+        overlay.addView(directText); overlay.addView(sarcasticText); overlay.addView(funnyText); overlay.addView(calmText);
 
-        LinearLayout buttons = new LinearLayout(this);
-        buttons.setOrientation(LinearLayout.HORIZONTAL);
-        buttons.setGravity(Gravity.END);
-        buttons.setPadding(0, dp(8), 0, 0);
-        startButton = button("START");
-        stopButton = button("STOP");
-        Button hideButton = button("×");
+        LinearLayout buttons = new LinearLayout(this); buttons.setOrientation(LinearLayout.HORIZONTAL); buttons.setGravity(Gravity.END); buttons.setPadding(0,dp(8),0,0);
+        startButton = button("START"); stopButton = button("STOP"); Button hideButton = button("×");
         startButton.setOnClickListener(v -> { if (engine != null) engine.start(); startRecognitionLoop(); });
         stopButton.setOnClickListener(v -> { stopRecognition(); if (engine != null) engine.stop("user_stopped"); });
         hideButton.setOnClickListener(v -> { stopRecognition(); if (engine != null && engine.isRunning()) engine.stop("overlay_hidden"); removeOverlay(); });
-        buttons.addView(startButton); buttons.addView(stopButton); buttons.addView(hideButton);
-        overlay.addView(buttons);
+        buttons.addView(startButton); buttons.addView(stopButton); buttons.addView(hideButton); overlay.addView(buttons);
 
-        params = new WindowManager.LayoutParams(
-                dp(365), WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT);
-        params.gravity = Gravity.TOP | Gravity.START;
-        params.x = dp(8); params.y = dp(48);
-        installDrag(header);
-        windowManager.addView(overlay, params);
+        params = new WindowManager.LayoutParams(dp(365), WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.START; params.x = dp(8); params.y = dp(48);
+        installDrag(header); windowManager.addView(overlay, params);
     }
 
     private TextView replyBox(String initial) {
-        TextView t = text(initial, 13, Color.WHITE);
-        t.setMaxLines(2);
-        t.setPadding(dp(8), dp(7), dp(8), dp(7));
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.argb(110, 255, 255, 255));
-        bg.setCornerRadius(dp(10));
-        t.setBackground(bg);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(0, dp(3), 0, 0); t.setLayoutParams(lp);
-        return t;
+        TextView t = text(initial, 13, Color.WHITE); t.setMaxLines(2); t.setPadding(dp(8),dp(7),dp(8),dp(7));
+        GradientDrawable bg = new GradientDrawable(); bg.setColor(Color.argb(110,255,255,255)); bg.setCornerRadius(dp(10)); t.setBackground(bg);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT); lp.setMargins(0,dp(3),0,0); t.setLayoutParams(lp); return t;
     }
 
     private void removeOverlay() {
-        if (overlay != null) overlay.removeCallbacks(answerTicker);
+        if (overlay != null) overlay.removeCallbacks(liveTicker);
         if (windowManager != null && overlay != null) { try { windowManager.removeView(overlay); } catch (Throwable ignored) {} }
-        overlay = null; statusText = null; appText = null; meterText = null; transcriptText = null;
-        directText = null; sarcasticText = null; funnyText = null; calmText = null; startButton = null; stopButton = null;
+        overlay = null; statusText = null; appText = null; meterText = null; transcriptText = null; directText = null; sarcasticText = null; funnyText = null; calmText = null; startButton = null; stopButton = null;
     }
 
     private void renderSnapshot(MicProbeEngine.Snapshot snapshot) {
         if (overlay == null) return;
-        meterText.setText(String.format(Locale.US, "Mic %.1f dBFS • silenced %d", snapshot.dbfs, snapshot.silenceEvents));
-        if (snapshot.clientSilenced) {
-            statusText.setText("Mic client е заглушен от Android");
-            statusText.setTextColor(Color.rgb(255, 100, 100));
-        } else if (snapshot.running) {
-            statusText.setTextColor(Color.rgb(120, 255, 160));
-        } else {
-            statusText.setText(snapshot.status);
-            statusText.setTextColor(Color.WHITE);
-        }
+        meterText.setText(String.format(Locale.US,"Mic %.1f dBFS • silenced %d",snapshot.dbfs,snapshot.silenceEvents));
+        if (snapshot.clientSilenced) { statusText.setText("Mic client е заглушен от Android"); statusText.setTextColor(Color.rgb(255,100,100)); }
+        else if (snapshot.running) statusText.setTextColor(Color.rgb(120,255,160));
+        else { statusText.setText(snapshot.status); statusText.setTextColor(Color.WHITE); }
         if (startButton != null) startButton.setEnabled(!snapshot.running);
         if (stopButton != null) stopButton.setEnabled(snapshot.running);
     }
@@ -347,37 +322,17 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             @Override public boolean onTouch(View v, MotionEvent event) {
                 if (params == null || windowManager == null || overlay == null) return false;
                 switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        downRawX = event.getRawX(); downRawY = event.getRawY(); downX = params.x; downY = params.y; return true;
-                    case MotionEvent.ACTION_MOVE:
-                        params.x = downX + Math.round(event.getRawX() - downRawX);
-                        params.y = downY + Math.round(event.getRawY() - downRawY);
-                        windowManager.updateViewLayout(overlay, params); return true;
+                    case MotionEvent.ACTION_DOWN: downRawX=event.getRawX(); downRawY=event.getRawY(); downX=params.x; downY=params.y; return true;
+                    case MotionEvent.ACTION_MOVE: params.x=downX+Math.round(event.getRawX()-downRawX); params.y=downY+Math.round(event.getRawY()-downRawY); windowManager.updateViewLayout(overlay,params); return true;
                     default: return false;
                 }
             }
         });
     }
 
-    private TextView text(String value, int sp, int color) {
-        TextView t = new TextView(this); t.setText(value); t.setTextSize(sp); t.setTextColor(color); return t;
-    }
-
-    private Button button(String label) {
-        Button b = new Button(this); b.setText(label); b.setAllCaps(false);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, dp(42));
-        lp.setMargins(dp(4), 0, 0, 0); b.setLayoutParams(lp); return b;
-    }
-
-    private static String shorten(String s, int max) {
-        if (s == null) return "";
-        String clean = s.replace('\n', ' ').trim();
-        if (clean.length() <= max) return clean;
-        return clean.substring(0, Math.max(1, max - 1)) + "…";
-    }
-
+    private TextView text(String value, int sp, int color) { TextView t = new TextView(this); t.setText(value); t.setTextSize(sp); t.setTextColor(color); return t; }
+    private Button button(String label) { Button b = new Button(this); b.setText(label); b.setAllCaps(false); LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT,dp(42)); lp.setMargins(dp(4),0,0,0); b.setLayoutParams(lp); return b; }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
-    private static boolean isTikTokPackage(String pkg) {
-        return "com.zhiliaoapp.musically".equals(pkg) || "com.ss.android.ugc.trill".equals(pkg);
-    }
+    private static String shorten(String s, int max) { String clean=s==null?"":s.replace('\n',' ').trim(); return clean.length()<=max?clean:clean.substring(0,Math.max(1,max-1))+"…"; }
+    private static boolean isTikTokPackage(String pkg) { return "com.zhiliaoapp.musically".equals(pkg) || "com.ss.android.ugc.trill".equals(pkg); }
 }
