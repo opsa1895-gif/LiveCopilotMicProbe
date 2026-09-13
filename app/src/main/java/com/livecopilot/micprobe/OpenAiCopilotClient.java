@@ -68,7 +68,7 @@ final class OpenAiCopilotClient {
 
     private static final int MAX_AUDIO_QUEUE = 3;
     private static final int MAX_TURNS = 8;
-    private static final long ENGAGEMENT_GAP_MS = 22_000L;
+    private static final long ENGAGEMENT_GAP_MS = 12_000L;
     private static final long MAX_REPLY_AGE_MS = 12_000L;
 
     private final Context context;
@@ -141,8 +141,6 @@ final class OpenAiCopilotClient {
             long now = System.currentTimeMillis();
             synchronized (this) {
                 if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
-                latestReplySerial++;
-                pendingReply = null;
             }
 
             boolean actionable = isActionable(focus);
