@@ -23,11 +23,13 @@ import android.widget.Toast;
 
 public class MainActivity extends Activity {
     private static final int REQ_MIC = 1001;
-    private TextView permissionState;
+
+    private TextView micState;
     private TextView accessibilityState;
-    private TextView apiState;
-    private TextView resultText;
+    private TextView aiState;
     private EditText apiKeyInput;
+    private EditText keywordsInput;
+    private EditText styleInput;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -45,99 +47,113 @@ public class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(24), dp(20), dp(40));
+        root.setPadding(dp(20), dp(24), dp(20), dp(36));
         scroll.addView(root);
 
-        TextView title = text("Live Copilot v0.5", 26, Color.rgb(20, 20, 24));
+        TextView title = text("Live Copilot", 28, Color.rgb(20, 20, 24));
         title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
         root.addView(title);
 
-        TextView intro = text(
-                "Тази версия използва реалния аудио поток от overlay-а и cloud speech-to-text за по-точно разпознаване на бърза българска реч. " +
-                        "После AI използва последните реплики като контекст и прави 4 различни варианта за отговор.",
+        TextView subtitle = text(
+                "Кратки AI подсказки върху TikTok Live — без да ти запълват екрана.",
                 15, Color.DKGRAY);
-        intro.setPadding(0, dp(12), 0, dp(18));
-        root.addView(intro);
+        subtitle.setPadding(0, dp(6), 0, dp(18));
+        root.addView(subtitle);
 
-        root.addView(sectionTitle("1. Микрофон"));
-        permissionState = text("", 14, Color.DKGRAY);
-        root.addView(permissionState);
+        LinearLayout stateCard = new LinearLayout(this);
+        stateCard.setOrientation(LinearLayout.VERTICAL);
+        stateCard.setPadding(dp(14), dp(12), dp(14), dp(12));
+        GradientDrawable cardBg = new GradientDrawable();
+        cardBg.setColor(Color.rgb(246, 246, 249));
+        cardBg.setCornerRadius(dp(14));
+        stateCard.setBackground(cardBg);
+        micState = text("", 14, Color.DKGRAY);
+        accessibilityState = text("", 14, Color.DKGRAY);
+        aiState = text("", 14, Color.DKGRAY);
+        stateCard.addView(micState);
+        stateCard.addView(accessibilityState);
+        stateCard.addView(aiState);
+        root.addView(stateCard);
+
         Button micButton = button("Разреши микрофона");
         micButton.setOnClickListener(v -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC));
         root.addView(micButton);
 
-        root.addView(sectionTitle("2. Accessibility overlay"));
-        accessibilityState = text("", 14, Color.DKGRAY);
-        root.addView(accessibilityState);
-        Button accessibilityButton = button("Отвори Accessibility settings");
+        Button accessibilityButton = button("Настрой Accessibility overlay");
         accessibilityButton.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         root.addView(accessibilityButton);
 
-        root.addView(sectionTitle("3. AI разпознаване"));
-        apiState = text("", 14, Color.DKGRAY);
-        root.addView(apiState);
-        apiKeyInput = new EditText(this);
-        apiKeyInput.setHint("OpenAI API key");
-        apiKeyInput.setSingleLine(true);
-        apiKeyInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        root.addView(sectionTitle("AI настройка"));
+
+        apiKeyInput = input("OpenAI API key", true);
+        root.addView(apiKeyInput);
+
+        keywordsInput = input("Имена/думи за по-точно чуване (по желание)", false);
+        root.addView(keywordsInput);
+
+        styleInput = input("Твоят стил, напр. кратък, остроумен (по желание)", false);
+        root.addView(styleInput);
+
+        Context prefsContext = this;
         String savedKey = getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE)
                 .getString("openai_api_key", "");
-        if (!savedKey.isEmpty()) apiKeyInput.setText(savedKey);
-        root.addView(apiKeyInput);
-        Button saveKey = button("Запази API key");
-        saveKey.setOnClickListener(v -> {
-            String key = apiKeyInput.getText().toString().trim();
-            getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE)
-                    .edit().putString("openai_api_key", key).apply();
-            Toast.makeText(this, key.isEmpty() ? "API key е изтрит" : "API key е запазен", Toast.LENGTH_SHORT).show();
+        String savedKeywords = getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE)
+                .getString("stt_keywords", "");
+        String savedStyle = getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE)
+                .getString("host_style", "");
+        apiKeyInput.setText(savedKey);
+        keywordsInput.setText(savedKeywords);
+        styleInput.setText(savedStyle);
+
+        Button saveButton = button("Запази настройките");
+        saveButton.setOnClickListener(v -> {
+            getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE).edit()
+                    .putString("openai_api_key", apiKeyInput.getText().toString().trim())
+                    .putString("stt_keywords", keywordsInput.getText().toString().trim())
+                    .putString("host_style", styleInput.getText().toString().trim())
+                    .apply();
+            Toast.makeText(prefsContext, "Настройките са запазени", Toast.LENGTH_SHORT).show();
             refreshState();
         });
-        root.addView(saveKey);
+        root.addView(saveButton);
 
-        TextView apiNote = text(
-                "За прототипа ключът се пази локално на телефона. Не го слагай в GitHub и не го споделяй. За публичната версия ще използваме собствен backend.",
+        TextView note = text(
+                "При този прототип ключът се пази локално на телефона. За публична версия трябва backend, за да не стои ключ в приложението.",
                 12, Color.GRAY);
-        root.addView(apiNote);
+        note.setPadding(0, dp(4), 0, dp(14));
+        root.addView(note);
 
-        root.addView(sectionTitle("4. Тест с TikTok"));
-        TextView testInstructions = text(
-                "Натисни START от плаващия прозорец и отвори TikTok. На всеки няколко секунди приложението изпраща кратък аудио сегмент за по-точна транскрипция. " +
-                        "Гледай реда 'Чух:' — ако той е точен, отговорите вече се правят върху правилния контекст.",
-                14, Color.DKGRAY);
-        root.addView(testInstructions);
         Button tiktokButton = button("Отвори TikTok");
         tiktokButton.setOnClickListener(v -> openTikTok());
         root.addView(tiktokButton);
 
-        root.addView(sectionTitle("Последен резултат"));
-        resultText = text("", 14, Color.DKGRAY);
-        GradientDrawable resultBg = new GradientDrawable();
-        resultBg.setColor(Color.rgb(245, 245, 248));
-        resultBg.setCornerRadius(dp(14));
-        resultText.setBackground(resultBg);
-        resultText.setPadding(dp(14), dp(14), dp(14), dp(14));
-        root.addView(resultText);
+        TextView hint = text(
+                "В overlay-а: START започва слушане, стилът се сменя с един бутон, а „—“ свива всичко до малък AI прозорец. Дълго натискане върху LIVE COPILOT показва диагностика.",
+                12, Color.GRAY);
+        hint.setPadding(0, dp(12), 0, 0);
+        root.addView(hint);
 
         return scroll;
     }
 
     private void refreshState() {
-        if (permissionState == null) return;
+        if (micState == null) return;
         boolean mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
         boolean accessibility = isOurAccessibilityServiceEnabled();
         String key = getSharedPreferences("live_copilot_ai", Context.MODE_PRIVATE)
                 .getString("openai_api_key", "").trim();
 
-        permissionState.setText(mic ? "✓ RECORD_AUDIO е разрешен" : "✗ RECORD_AUDIO още не е разрешен");
-        accessibilityState.setText(accessibility ? "✓ Live Copilot overlay е включен" : "✗ Overlay услугата още не е включена");
-        apiState.setText(key.isEmpty() ? "✗ Няма API key — cloud разпознаването няма да работи" : "✓ API key е записан");
-        resultText.setText(ProbeResultStore.summary(this));
+        micState.setText(mic ? "✓ Микрофон" : "○ Микрофонът чака разрешение");
+        accessibilityState.setText(accessibility ? "✓ Overlay включен" : "○ Overlay не е включен");
+        aiState.setText(key.isEmpty() ? "○ AI ключът не е настроен" : "✓ AI готов");
     }
 
     private boolean isOurAccessibilityServiceEnabled() {
         ComponentName expected = new ComponentName(this, MicProbeAccessibilityService.class);
-        String enabled = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        String enabled = Settings.Secure.getString(
+                getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
         if (enabled == null) return false;
+
         TextUtils.SimpleStringSplitter splitter = new TextUtils.SimpleStringSplitter(':');
         splitter.setString(enabled);
         while (splitter.hasNext()) {
@@ -162,8 +178,24 @@ public class MainActivity extends Activity {
     private TextView sectionTitle(String value) {
         TextView t = text(value, 18, Color.rgb(25, 25, 30));
         t.setTypeface(t.getTypeface(), android.graphics.Typeface.BOLD);
-        t.setPadding(0, dp(18), 0, dp(6));
+        t.setPadding(0, dp(20), 0, dp(7));
         return t;
+    }
+
+    private EditText input(String hint, boolean password) {
+        EditText e = new EditText(this);
+        e.setHint(hint);
+        e.setSingleLine(true);
+        if (password) {
+            e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        } else {
+            e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        }
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(54));
+        lp.setMargins(0, dp(3), 0, dp(3));
+        e.setLayoutParams(lp);
+        return e;
     }
 
     private TextView text(String value, int sp, int color) {
@@ -171,7 +203,7 @@ public class MainActivity extends Activity {
         t.setText(value);
         t.setTextSize(sp);
         t.setTextColor(color);
-        t.setLineSpacing(0, 1.1f);
+        t.setLineSpacing(0, 1.08f);
         return t;
     }
 
@@ -180,8 +212,9 @@ public class MainActivity extends Activity {
         b.setText(label);
         b.setAllCaps(false);
         b.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
-        lp.setMargins(0, dp(8), 0, dp(4));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
+        lp.setMargins(0, dp(7), 0, 0);
         b.setLayoutParams(lp);
         return b;
     }
