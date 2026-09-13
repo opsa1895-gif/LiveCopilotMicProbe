@@ -23,10 +23,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private static final String UI_PREFS = "live_copilot_ui";
     private static final long CONTEXT_RESET_AFTER_PAUSE_MS = 90_000L;
     private static final long SEMANTIC_CONTEXT_IDLE_RESET_MS = 45_000L;
-    private static final long SEMANTIC_MIN_GAP_MS = 6_000L;
+    private static final long SEMANTIC_MIN_GAP_MS = 4_000L;
     private static final long SEMANTIC_FOCUS_MAX_AGE_MS = 12_000L;
     private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     private static final int SEMANTIC_CONTEXT_TURNS = 6;
+    private static final int MAX_FALLBACK_AUDIO_SAMPLES = 16_000 * 12;
 
     private WindowManager windowManager;
     private WindowManager.LayoutParams params;
@@ -43,18 +44,27 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private MicProbeEngine engine;
     private OpenAiCopilotClient aiClient;
     private SemanticReplyFallback semanticFallback;
+    private RealtimeTranscriptionClient realtimeTranscriber;
     private OpenAiCopilotClient.Replies currentReplies;
     private MicProbeEngine.Snapshot latestSnapshot;
     private final Deque<String> semanticTurns = new ArrayDeque<>();
 
     private String foregroundPackage = "неизвестно";
     private String lastTranscript = "";
+    private String realtimePartial = "";
+    private String realtimeState = "off";
     private String aiStatus = "Готов";
     private String pendingSemanticFocus = "";
     private int styleIndex;
     private boolean collapsed;
     private boolean debugVisible;
     private boolean hasStartedSession;
+    private volatile boolean realtimeTurnActive;
+    private short[] fallbackTurnAudio;
+    private int fallbackTurnSampleRate = 16_000;
+    private long lastRealtimeTurnSerial;
+    private long lastFileTranscriptAtMs;
+    private long lastRealtimeTranscriptAtMs;
     private long answerUpdatedAtMs;
     private long pausedAtMs;
     private long pendingSemanticAtMs;
@@ -79,6 +89,28 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         aiClient = new OpenAiCopilotClient(this, this);
         semanticFallback = new SemanticReplyFallback(this, (requestId, replies) ->
                 getMainExecutor().execute(() -> applySemanticReply(requestId, replies)));
+        realtimeTranscriber = new RealtimeTranscriptionClient(this, new RealtimeTranscriptionClient.Listener() {
+            @Override
+            public void onState(String state) {
+                getMainExecutor().execute(() -> {
+                    realtimeState = state == null ? "?" : state;
+                    renderDebug();
+                });
+            }
+
+            @Override
+            public void onPartial(String partial) {
+                getMainExecutor().execute(() -> {
+                    realtimePartial = partial == null ? "" : partial;
+                    renderDebug();
+                });
+            }
+
+            @Override
+            public void onFinal(long turnSerial, String transcript) {
+                getMainExecutor().execute(() -> handleRealtimeFinal(turnSerial, transcript));
+            }
+        });
         showOverlay();
     }
 
@@ -96,6 +128,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     @Override
     public void onDestroy() {
         if (engine != null && engine.isRunning()) engine.stop("service_destroyed");
+        if (realtimeTranscriber != null) realtimeTranscriber.shutdown();
         if (aiClient != null) aiClient.shutdown();
         if (semanticFallback != null) semanticFallback.shutdown();
         removeOverlay();
@@ -137,15 +170,60 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     @Override
-    public void onPcmChunk(short[] samples, int sampleRate) {
-        if (aiClient != null && engine != null && engine.isRunning()) {
-            short[] prepared = AudioPreprocessor.prepare(samples, sampleRate);
-            if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate);
+    public void onStreamTurnStart(int sampleRate) {
+        clearFallbackTurnAudio();
+        realtimeTurnActive = realtimeTranscriber != null && realtimeTranscriber.beginTurn(sampleRate);
+    }
+
+    @Override
+    public void onPcmStream(short[] samples, int sampleRate) {
+        if (!realtimeTurnActive || realtimeTranscriber == null) return;
+        if (!realtimeTranscriber.append(samples, sampleRate)) {
+            realtimeTurnActive = false;
         }
     }
 
     @Override
+    public void onStreamTurnEnd() {
+        if (!realtimeTurnActive || realtimeTranscriber == null) {
+            realtimeTurnActive = false;
+            return;
+        }
+        boolean committed = realtimeTranscriber.commitTurn();
+        realtimeTurnActive = false;
+        if (!committed) submitBufferedFallback();
+        else clearFallbackTurnAudio();
+    }
+
+    @Override
+    public void onPcmChunk(short[] samples, int sampleRate) {
+        if (aiClient == null || engine == null || !engine.isRunning()) return;
+
+        if (realtimeTurnActive) {
+            appendFallbackTurnAudio(samples, sampleRate);
+            return;
+        }
+
+        short[] candidate = takeFallbackPlus(samples, sampleRate);
+        short[] prepared = AudioPreprocessor.prepare(candidate, sampleRate);
+        if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate);
+    }
+
+    @Override
     public void onTranscript(String transcript) {
+        lastFileTranscriptAtMs = System.currentTimeMillis();
+        acceptTranscript(transcript, false);
+    }
+
+    private void handleRealtimeFinal(long turnSerial, String transcript) {
+        if (turnSerial <= lastRealtimeTurnSerial) return;
+        lastRealtimeTurnSerial = turnSerial;
+        lastRealtimeTranscriptAtMs = System.currentTimeMillis();
+        realtimePartial = "";
+        acceptTranscript(transcript, true);
+    }
+
+    private void acceptTranscript(String transcript, boolean fromRealtime) {
         String clean = transcript == null ? "" : transcript.replace('\n', ' ').trim();
         long now = System.currentTimeMillis();
         if (!clean.isEmpty()
@@ -172,13 +250,21 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             pendingSemanticFocus = clean;
             pendingSemanticAtMs = now;
         }
-        getMainExecutor().execute(this::renderDebug);
+
+        renderDebug();
+        if (fromRealtime && !clean.isEmpty()) {
+            scheduleSemanticFallbackIfNeeded();
+        }
     }
 
     @Override
     public void onReplies(OpenAiCopilotClient.Replies replies) {
         getMainExecutor().execute(() -> {
             if (engine == null || !engine.isRunning() || replies == null) return;
+            // If a realtime final transcript arrived after the last file transcript,
+            // a delayed file-path reply belongs to older speech and must not overwrite it.
+            if (lastFileTranscriptAtMs < lastRealtimeTranscriptAtMs) return;
+
             if (semanticFallback != null) semanticFallback.invalidate();
             activeSemanticRequestId = -1L;
             pendingSemanticFocus = "";
@@ -374,7 +460,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         overlay.addView(answerText);
 
         debugText = text("", 10, Color.LTGRAY);
-        debugText.setMaxLines(5);
+        debugText.setMaxLines(6);
         debugText.setEllipsize(TextUtils.TruncateAt.END);
         debugText.setPadding(0, dp(6), 0, 0);
         debugText.setVisibility(View.GONE);
@@ -424,10 +510,13 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (engine == null) return;
         if (engine.isRunning()) {
             engine.stop("user_paused");
+            if (realtimeTranscriber != null) realtimeTranscriber.stop();
             pausedAtMs = System.currentTimeMillis();
             if (semanticFallback != null) semanticFallback.invalidate();
             activeSemanticRequestId = -1L;
             pendingSemanticFocus = "";
+            realtimeTurnActive = false;
+            clearFallbackTurnAudio();
             aiStatus = "Пауза";
             renderStatus();
             return;
@@ -443,6 +532,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             currentReplies = null;
             answerUpdatedAtMs = 0L;
             lastTranscript = "";
+            realtimePartial = "";
+            lastRealtimeTurnSerial = 0L;
+            lastFileTranscriptAtMs = 0L;
+            lastRealtimeTranscriptAtMs = 0L;
             pendingSemanticFocus = "";
             pendingSemanticAtMs = 0L;
             lastSemanticRequestAtMs = 0L;
@@ -457,6 +550,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             answerText.setAlpha(0.65f);
         }
 
+        if (realtimeTranscriber != null) realtimeTranscriber.start();
         aiStatus = "Слушам…";
         renderStatus();
         engine.start();
@@ -517,12 +611,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 ? "mic —"
                 : String.format(Locale.US, "mic %.0f dB%s", latestSnapshot.dbfs,
                 latestSnapshot.clientSilenced ? " • BLOCKED" : "");
+        String rt = " • RT " + realtimeState;
         String heard = lastTranscript.isEmpty() ? "" : "\nЧух: " + shorten(lastTranscript, 115);
+        String partial = realtimePartial.isEmpty() ? "" : "\nRT partial: " + shorten(realtimePartial, 100);
         String latency = "\n~end→text " + latencyLabel(lastSttLatencyMs)
                 + " • text→1st " + latencyLabel(lastFirstReplyLatencyMs)
                 + " • styles " + latencyLabel(lastStylesLatencyMs)
                 + " • sem " + latencyLabel(lastSemanticLatencyMs);
-        debugText.setText(app + " • " + mic + heard + latency);
+        debugText.setText(app + " • " + mic + rt + heard + partial + latency);
     }
 
     private void resetLatencyMetrics() {
@@ -538,6 +634,52 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (ms < 0L) return "—";
         if (ms < 1_000L) return ms + "ms";
         return String.format(Locale.US, "%.1fs", ms / 1000.0);
+    }
+
+    private synchronized void appendFallbackTurnAudio(short[] samples, int sampleRate) {
+        if (samples == null || samples.length == 0) return;
+        fallbackTurnSampleRate = sampleRate;
+        if (fallbackTurnAudio == null || fallbackTurnAudio.length == 0) {
+            fallbackTurnAudio = samples.clone();
+            return;
+        }
+        int total = Math.min(MAX_FALLBACK_AUDIO_SAMPLES, fallbackTurnAudio.length + samples.length);
+        short[] next = new short[total];
+        int keepOld = Math.min(fallbackTurnAudio.length, Math.max(0, total - samples.length));
+        if (keepOld > 0) {
+            System.arraycopy(fallbackTurnAudio, fallbackTurnAudio.length - keepOld, next, 0, keepOld);
+        }
+        int copyNew = Math.min(samples.length, total - keepOld);
+        System.arraycopy(samples, samples.length - copyNew, next, keepOld, copyNew);
+        fallbackTurnAudio = next;
+    }
+
+    private synchronized short[] takeFallbackPlus(short[] samples, int sampleRate) {
+        if (fallbackTurnAudio == null || fallbackTurnAudio.length == 0 || fallbackTurnSampleRate != sampleRate) {
+            clearFallbackTurnAudio();
+            return samples == null ? new short[0] : samples;
+        }
+        appendFallbackTurnAudio(samples, sampleRate);
+        short[] out = fallbackTurnAudio;
+        fallbackTurnAudio = null;
+        return out == null ? new short[0] : out;
+    }
+
+    private synchronized void submitBufferedFallback() {
+        if (aiClient == null || fallbackTurnAudio == null || fallbackTurnAudio.length == 0) {
+            clearFallbackTurnAudio();
+            return;
+        }
+        short[] audio = fallbackTurnAudio;
+        int rate = fallbackTurnSampleRate;
+        fallbackTurnAudio = null;
+        short[] prepared = AudioPreprocessor.prepare(audio, rate);
+        if (prepared.length > 0) aiClient.submitAudio(prepared, rate);
+    }
+
+    private synchronized void clearFallbackTurnAudio() {
+        fallbackTurnAudio = null;
+        fallbackTurnSampleRate = 16_000;
     }
 
     private void setCollapsed(boolean value) {
