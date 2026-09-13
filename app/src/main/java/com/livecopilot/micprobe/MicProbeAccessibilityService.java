@@ -110,7 +110,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     @Override
     public void onPcmChunk(short[] samples, int sampleRate) {
         if (aiClient != null && engine != null && engine.isRunning()) {
-            aiClient.submitAudio(samples, sampleRate);
+            short[] prepared = AudioPreprocessor.prepare(samples, sampleRate);
+            if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate);
         }
     }
 

@@ -43,10 +43,10 @@ final class MicProbeEngine {
     private static final int FRAME_SAMPLES = 320; // 20 ms
     private static final int PRE_ROLL_FRAMES = 20; // 400 ms
     private static final int START_VOICE_FRAMES = 2; // 40 ms
-    private static final int END_SILENCE_FRAMES = 35; // 700 ms
-    private static final int MIN_SEGMENT_SAMPLES = (int) (SAMPLE_RATE * 1.0);
-    private static final int MAX_SEGMENT_SAMPLES = SAMPLE_RATE * 8;
-    private static final int OVERLAP_SAMPLES = SAMPLE_RATE; // 1 second only on forced long-turn split
+    private static final int END_SILENCE_FRAMES = 30; // 600 ms
+    private static final int MIN_SEGMENT_SAMPLES = SAMPLE_RATE;
+    private static final int MAX_SEGMENT_SAMPLES = SAMPLE_RATE * 6;
+    private static final int OVERLAP_SAMPLES = (int) (SAMPLE_RATE * 0.8); // forced long-turn split only
 
     private final Context context;
     private final Listener listener;
@@ -81,8 +81,7 @@ final class MicProbeEngine {
         if (running.get()) return;
 
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            emit(new Snapshot(false, false, -90.0, 0,
-                    "Няма разрешение за микрофона."));
+            emit(new Snapshot(false, false, -90.0, 0, "Няма разрешение за микрофона."));
             return;
         }
 
@@ -96,8 +95,7 @@ final class MicProbeEngine {
         final int minBuffer = AudioRecord.getMinBufferSize(
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-        );
+                AudioFormat.ENCODING_PCM_16BIT);
 
         if (minBuffer <= 0) {
             fail("AudioRecord buffer error: " + minBuffer);
@@ -308,8 +306,7 @@ final class MicProbeEngine {
 
     private void emitSegment(ShortAccumulator segment, int voicedFrames) {
         if (voicedFrames < 4 || segment.size() < MIN_SEGMENT_SAMPLES) return;
-        short[] audio = segment.toArray();
-        listener.onPcmChunk(audio, SAMPLE_RATE);
+        listener.onPcmChunk(segment.toArray(), SAMPLE_RATE);
     }
 
     private static double dbfs(short[] samples, int length) {
