@@ -7,7 +7,7 @@
         <package android:name="com.ss.android.ugc.trill" />
     </queries>
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:label="Live Copilot"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
