@@ -11,7 +11,7 @@ import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.SystemClock;
 
-import java.util.Arrays;
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -20,6 +20,7 @@ final class MicProbeEngine {
     interface Listener {
         void onSnapshot(Snapshot snapshot);
         void onPcmChunk(short[] samples, int sampleRate);
+        void onVoiceActivity(boolean speaking);
     }
 
     static final class Snapshot {
@@ -39,7 +40,13 @@ final class MicProbeEngine {
     }
 
     private static final int SAMPLE_RATE = 16_000;
-    private static final int AI_CHUNK_SECONDS = 4;
+    private static final int FRAME_SAMPLES = 320; // 20 ms
+    private static final int PRE_ROLL_FRAMES = 20; // 400 ms
+    private static final int START_VOICE_FRAMES = 2; // 40 ms
+    private static final int END_SILENCE_FRAMES = 35; // 700 ms
+    private static final int MIN_SEGMENT_SAMPLES = (int) (SAMPLE_RATE * 1.0);
+    private static final int MAX_SEGMENT_SAMPLES = SAMPLE_RATE * 8;
+    private static final int OVERLAP_SAMPLES = SAMPLE_RATE; // 1 second only on forced long-turn split
 
     private final Context context;
     private final Listener listener;
@@ -75,7 +82,7 @@ final class MicProbeEngine {
 
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             emit(new Snapshot(false, false, -90.0, 0,
-                    "Няма RECORD_AUDIO. Върни се в приложението и разреши микрофона."));
+                    "Няма разрешение за микрофона."));
             return;
         }
 
@@ -93,7 +100,7 @@ final class MicProbeEngine {
         );
 
         if (minBuffer <= 0) {
-            fail("AudioRecord.getMinBufferSize() върна " + minBuffer);
+            fail("AudioRecord buffer error: " + minBuffer);
             return;
         }
 
@@ -115,7 +122,7 @@ final class MicProbeEngine {
 
             recorder = builder.build();
             if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
-                fail("AudioRecord не се инициализира.");
+                fail("Микрофонът не се инициализира.");
                 safeRelease();
                 return;
             }
@@ -133,7 +140,7 @@ final class MicProbeEngine {
 
             recorder.startRecording();
             if (recorder.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
-                fail("AudioRecord не влезе в RECORDSTATE_RECORDING.");
+                fail("Микрофонът не стартира запис.");
                 safeRelease();
                 return;
             }
@@ -141,12 +148,12 @@ final class MicProbeEngine {
             startedAtMs = SystemClock.elapsedRealtime();
             running.set(true);
             finalStatus = "recording";
-            emit(snapshot("Слушам. AI обработва на кратки аудио сегменти."));
+            emit(snapshot("Слушам"));
 
-            readThread = new Thread(() -> readLoop(bufferBytes), "MicProbeAudioReader");
+            readThread = new Thread(() -> readLoop(bufferBytes), "LiveCopilotAudioReader");
             readThread.start();
         } catch (SecurityException se) {
-            fail("SecurityException: " + safeMessage(se));
+            fail("Няма достъп до микрофона.");
             safeRelease();
         } catch (Throwable t) {
             fail(t.getClass().getSimpleName() + ": " + safeMessage(t));
@@ -170,7 +177,7 @@ final class MicProbeEngine {
 
         Thread t = readThread;
         if (t != null && t != Thread.currentThread()) {
-            try { t.join(500); }
+            try { t.join(700); }
             catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
         }
 
@@ -178,16 +185,25 @@ final class MicProbeEngine {
         ProbeResultStore.save(context, duration, silenceEvents, peakDb, audibleWindows, tiktokSeen, finalStatus);
 
         safeRelease();
-        emit(new Snapshot(false, lastSilenced, peakDb, silenceEvents,
-                "Спряно. Натисни START за нова AI сесия."));
+        emitVoice(false);
+        emit(new Snapshot(false, lastSilenced, peakDb, silenceEvents, "Спряно"));
     }
 
     private void readLoop(int bufferBytes) {
-        short[] buffer = new short[Math.max(1024, bufferBytes / 2)];
-        short[] aiChunk = new short[SAMPLE_RATE * AI_CHUNK_SECONDS];
-        int aiPos = 0;
-        int voicedReads = 0;
-        long lastUiUpdate = 0;
+        short[] readBuffer = new short[Math.max(2048, bufferBytes / 2)];
+        short[] frame = new short[FRAME_SAMPLES];
+        int framePos = 0;
+
+        ArrayDeque<short[]> preRoll = new ArrayDeque<>();
+        ShortAccumulator segment = new ShortAccumulator(SAMPLE_RATE * 3);
+
+        boolean speaking = false;
+        int consecutiveVoiceFrames = 0;
+        int consecutiveSilenceFrames = 0;
+        int voicedFramesInSegment = 0;
+        double noiseFloorDb = -62.0;
+        double latestDb = -90.0;
+        long lastUiUpdate = 0L;
 
         while (running.get()) {
             AudioRecord r = recorder;
@@ -195,7 +211,7 @@ final class MicProbeEngine {
 
             int read;
             try {
-                read = r.read(buffer, 0, buffer.length, AudioRecord.READ_BLOCKING);
+                read = r.read(readBuffer, 0, readBuffer.length, AudioRecord.READ_BLOCKING);
             } catch (Throwable t) {
                 if (running.get()) {
                     finalStatus = "read_error";
@@ -206,52 +222,109 @@ final class MicProbeEngine {
             }
 
             if (read <= 0) {
-                if (read == AudioRecord.ERROR_DEAD_OBJECT) {
-                    finalStatus = "dead_object";
-                    break;
-                }
+                if (read == AudioRecord.ERROR_DEAD_OBJECT) finalStatus = "dead_object";
                 continue;
             }
 
-            double sumSquares = 0.0;
-            for (int i = 0; i < read; i++) {
-                double normalized = buffer[i] / 32768.0;
-                sumSquares += normalized * normalized;
-            }
-            double rms = Math.sqrt(sumSquares / read);
-            double db = rms <= 0.000001 ? -90.0 : 20.0 * Math.log10(rms);
-            db = Math.max(-90.0, Math.min(0.0, db));
-            peakDb = Math.max(peakDb, db);
-
             boolean silenced = queryClientSilenced();
             updateSilenceState(silenced);
-            if (!silenced && db > -55.0) audibleWindows++;
-            if (!silenced && db > -48.0) voicedReads++;
 
-            int offset = 0;
-            while (offset < read) {
-                int n = Math.min(read - offset, aiChunk.length - aiPos);
-                System.arraycopy(buffer, offset, aiChunk, aiPos, n);
-                aiPos += n;
-                offset += n;
-                if (aiPos == aiChunk.length) {
-                    if (!silenced && voicedReads >= 2) {
-                        listener.onPcmChunk(Arrays.copyOf(aiChunk, aiChunk.length), SAMPLE_RATE);
-                    }
-                    aiPos = 0;
-                    voicedReads = 0;
+            for (int i = 0; i < read; i++) {
+                frame[framePos++] = readBuffer[i];
+                if (framePos < FRAME_SAMPLES) continue;
+
+                latestDb = dbfs(frame, FRAME_SAMPLES);
+                peakDb = Math.max(peakDb, latestDb);
+                if (!silenced && latestDb > -55.0) audibleWindows++;
+
+                if (!speaking && latestDb < -30.0) {
+                    noiseFloorDb = noiseFloorDb * 0.97 + latestDb * 0.03;
                 }
+                double voiceThreshold = clamp(noiseFloorDb + 11.0, -50.0, -31.0);
+                boolean voiced = !silenced && latestDb >= voiceThreshold;
+
+                short[] frameCopy = frame.clone();
+
+                if (!speaking) {
+                    preRoll.addLast(frameCopy);
+                    while (preRoll.size() > PRE_ROLL_FRAMES) preRoll.removeFirst();
+
+                    consecutiveVoiceFrames = voiced ? consecutiveVoiceFrames + 1 : 0;
+                    if (consecutiveVoiceFrames >= START_VOICE_FRAMES) {
+                        speaking = true;
+                        consecutiveSilenceFrames = 0;
+                        voicedFramesInSegment = consecutiveVoiceFrames;
+                        segment.clear();
+                        for (short[] old : preRoll) segment.append(old, old.length);
+                        preRoll.clear();
+                        emitVoice(true);
+                    }
+                } else {
+                    segment.append(frameCopy, frameCopy.length);
+                    if (voiced) {
+                        consecutiveSilenceFrames = 0;
+                        voicedFramesInSegment++;
+                    } else {
+                        consecutiveSilenceFrames++;
+                    }
+
+                    if (segment.size() >= MAX_SEGMENT_SAMPLES) {
+                        emitSegment(segment, voicedFramesInSegment);
+                        short[] overlap = segment.tail(OVERLAP_SAMPLES);
+                        segment.clear();
+                        segment.append(overlap, overlap.length);
+                        voicedFramesInSegment = voiced ? 1 : 0;
+                        consecutiveSilenceFrames = voiced ? 0 : consecutiveSilenceFrames;
+                    } else if (consecutiveSilenceFrames >= END_SILENCE_FRAMES
+                            && segment.size() >= MIN_SEGMENT_SAMPLES) {
+                        emitSegment(segment, voicedFramesInSegment);
+                        segment.clear();
+                        speaking = false;
+                        consecutiveVoiceFrames = 0;
+                        consecutiveSilenceFrames = 0;
+                        voicedFramesInSegment = 0;
+                        emitVoice(false);
+                    }
+                }
+
+                framePos = 0;
             }
 
             long now = SystemClock.elapsedRealtime();
-            if (now - lastUiUpdate >= 200) {
+            if (now - lastUiUpdate >= 300L) {
                 lastUiUpdate = now;
                 String s = silenced
-                        ? "ANDROID Е ЗАГЛУШИЛ НАШИЯ MIC CLIENT"
-                        : String.format(Locale.US, "Mic %.1f dBFS • AI слуша", db);
-                emit(new Snapshot(true, silenced, db, silenceEvents, s));
+                        ? "Mic блокиран от Android"
+                        : (speaking ? "Чувам реч" : "Слушам");
+                emit(new Snapshot(true, silenced, latestDb, silenceEvents, s));
             }
         }
+
+        if (segment.size() >= MIN_SEGMENT_SAMPLES && voicedFramesInSegment >= 4) {
+            emitSegment(segment, voicedFramesInSegment);
+        }
+        if (speaking) emitVoice(false);
+    }
+
+    private void emitSegment(ShortAccumulator segment, int voicedFrames) {
+        if (voicedFrames < 4 || segment.size() < MIN_SEGMENT_SAMPLES) return;
+        short[] audio = segment.toArray();
+        listener.onPcmChunk(audio, SAMPLE_RATE);
+    }
+
+    private static double dbfs(short[] samples, int length) {
+        double sumSquares = 0.0;
+        for (int i = 0; i < length; i++) {
+            double normalized = samples[i] / 32768.0;
+            sumSquares += normalized * normalized;
+        }
+        double rms = Math.sqrt(sumSquares / Math.max(1, length));
+        if (rms <= 0.000001) return -90.0;
+        return clamp(20.0 * Math.log10(rms), -90.0, 0.0);
+    }
+
+    private static double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private boolean queryClientSilenced() {
@@ -284,6 +357,10 @@ final class MicProbeEngine {
         context.getMainExecutor().execute(() -> listener.onSnapshot(snapshot));
     }
 
+    private void emitVoice(boolean speaking) {
+        context.getMainExecutor().execute(() -> listener.onVoiceActivity(speaking));
+    }
+
     private void safeRelease() {
         AudioRecord r = recorder;
         recorder = null;
@@ -300,5 +377,51 @@ final class MicProbeEngine {
     private static String safeMessage(Throwable t) {
         String m = t.getMessage();
         return m == null ? "без допълнително съобщение" : m;
+    }
+
+    private static final class ShortAccumulator {
+        private short[] data;
+        private int size;
+
+        ShortAccumulator(int initialCapacity) {
+            data = new short[Math.max(1024, initialCapacity)];
+        }
+
+        int size() {
+            return size;
+        }
+
+        void clear() {
+            size = 0;
+        }
+
+        void append(short[] src, int length) {
+            if (src == null || length <= 0) return;
+            int n = Math.min(length, src.length);
+            ensure(size + n);
+            System.arraycopy(src, 0, data, size, n);
+            size += n;
+        }
+
+        short[] tail(int count) {
+            int n = Math.min(Math.max(0, count), size);
+            short[] out = new short[n];
+            System.arraycopy(data, size - n, out, 0, n);
+            return out;
+        }
+
+        short[] toArray() {
+            short[] out = new short[size];
+            System.arraycopy(data, 0, out, 0, size);
+            return out;
+        }
+
+        private void ensure(int needed) {
+            if (needed <= data.length) return;
+            int newSize = Math.max(needed, data.length * 2);
+            short[] next = new short[newSize];
+            System.arraycopy(data, 0, next, 0, size);
+            data = next;
+        }
     }
 }
