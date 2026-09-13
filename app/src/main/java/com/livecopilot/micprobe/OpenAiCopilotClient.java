@@ -53,11 +53,13 @@ final class OpenAiCopilotClient {
 
     private static final class ReplyJob {
         final long serial;
+        final long createdAtMs;
         final String context;
         final String focus;
         final boolean engagement;
         ReplyJob(long serial, String context, String focus, boolean engagement) {
             this.serial = serial;
+            this.createdAtMs = System.currentTimeMillis();
             this.context = context;
             this.focus = focus;
             this.engagement = engagement;
@@ -67,6 +69,7 @@ final class OpenAiCopilotClient {
     private static final int MAX_AUDIO_QUEUE = 3;
     private static final int MAX_TURNS = 8;
     private static final long ENGAGEMENT_GAP_MS = 22_000L;
+    private static final long MAX_REPLY_AGE_MS = 12_000L;
 
     private final Context context;
     private final Listener listener;
@@ -138,10 +141,15 @@ final class OpenAiCopilotClient {
             long now = System.currentTimeMillis();
             synchronized (this) {
                 if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
+                latestReplySerial++;
+                pendingReply = null;
             }
 
             boolean actionable = isActionable(focus);
-            long reference = lastReplyAtMs > 0L ? lastReplyAtMs : firstSpeechAtMs;
+            long reference;
+            synchronized (this) {
+                reference = lastReplyAtMs > 0L ? lastReplyAtMs : firstSpeechAtMs;
+            }
             boolean engagement = !actionable && reference > 0L && now - reference >= ENGAGEMENT_GAP_MS;
 
             if (actionable || engagement) queueReply(focus, engagement);
@@ -208,7 +216,7 @@ final class OpenAiCopilotClient {
         try {
             listener.onStatus("Мисля…");
             primary = primaryReply(key, job.context, job.focus, job.engagement);
-            if (!current(job.serial)) return;
+            if (!current(job)) return;
 
             if (!primary.isEmpty()) {
                 listener.onReplies(new Replies(primary, "", "", ""));
@@ -216,11 +224,11 @@ final class OpenAiCopilotClient {
             }
 
             Replies complete = variants(key, job.context, job.focus, primary, job.engagement);
-            if (!current(job.serial)) return;
+            if (!current(job)) return;
             listener.onReplies(complete);
             listener.onStatus("Слушам");
         } catch (Throwable ignored) {
-            if (!current(job.serial)) return;
+            if (!current(job)) return;
             ReplyGenerator.Replies local = ReplyGenerator.generate(job.context, job.focus);
             listener.onReplies(new Replies(
                     primary.isEmpty() ? local.direct : primary,
@@ -231,8 +239,10 @@ final class OpenAiCopilotClient {
         }
     }
 
-    private synchronized boolean current(long serial) {
-        return !closed && serial == latestReplySerial;
+    private synchronized boolean current(ReplyJob job) {
+        return !closed
+                && job.serial == latestReplySerial
+                && System.currentTimeMillis() - job.createdAtMs <= MAX_REPLY_AGE_MS;
     }
 
     void shutdown() {
@@ -326,8 +336,7 @@ final class OpenAiCopilotClient {
                 " Отговорът е за изговаряне на живо, максимум 18 думи. Не повтаряй въпроса. Не измисляй факти. " +
                 "Стил на водещия: " + hostStyle() + ". Върни само репликата.";
 
-        JSONObject req = request(system, "Контекст:\n" + fullContext + "\n\nФокус:\n" + focus, 90);
-        HttpResult r = responses(key, req);
+        HttpResult r = responses(key, request(system, "Контекст:\n" + fullContext + "\n\nФокус:\n" + focus, 90));
         if (r.code < 200 || r.code >= 300) throw new IllegalStateException("reply " + r.code);
         return modelLine(extractText(new JSONObject(r.body)));
     }
@@ -364,6 +373,9 @@ final class OpenAiCopilotClient {
         JSONObject req = new JSONObject();
         req.put("model", "gpt-5.6-luna");
         req.put("max_output_tokens", maxTokens);
+        JSONObject reasoning = new JSONObject();
+        reasoning.put("effort", "none");
+        req.put("reasoning", reasoning);
         JSONArray input = new JSONArray();
         input.put(message("system", system));
         input.put(message("user", user));

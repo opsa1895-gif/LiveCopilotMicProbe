@@ -116,10 +116,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     @Override
     public void onReplies(OpenAiCopilotClient.Replies replies) {
         getMainExecutor().execute(() -> {
-            if (engine == null || !engine.isRunning()) return;
+            if (engine == null || !engine.isRunning() || replies == null) return;
             currentReplies = replies;
             answerUpdatedAtMs = System.currentTimeMillis();
             if (answerText != null) answerText.setAlpha(1f);
+            if (collapsed && headerText != null) headerText.setText("AI •");
             renderSelectedReply();
         });
     }
@@ -157,6 +158,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         collapseButton = smallButton("—");
         collapseButton.setOnClickListener(v -> setCollapsed(!collapsed));
+        collapseButton.setOnLongClickListener(v -> {
+            if (!collapsed) {
+                debugVisible = !debugVisible;
+                if (debugText != null) debugText.setVisibility(debugVisible ? View.VISIBLE : View.GONE);
+                renderDebug();
+            }
+            return true;
+        });
         top.addView(collapseButton);
         overlay.addView(top);
 
@@ -200,15 +209,6 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         controls.addView(powerButton);
         overlay.addView(controls);
 
-        headerText.setOnLongClickListener(v -> {
-            if (!collapsed) {
-                debugVisible = !debugVisible;
-                if (debugText != null) debugText.setVisibility(debugVisible ? View.VISIBLE : View.GONE);
-                renderDebug();
-            }
-            return true;
-        });
-
         params = new WindowManager.LayoutParams(
                 dp(330),
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -247,15 +247,20 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (styleButton != null) styleButton.setText(styleLabel(styleIndex) + " ›");
         if (answerText == null || currentReplies == null) return;
 
-        String value;
-        switch (styleIndex) {
-            case 1: value = currentReplies.sarcastic; break;
-            case 2: value = currentReplies.funny; break;
-            case 3: value = currentReplies.calm; break;
-            default: value = currentReplies.direct; break;
-        }
-        answerText.setText(value == null || value.trim().isEmpty() ? "…" : value.trim());
+        String value = selectedReply(currentReplies, styleIndex);
+        if (value == null || value.trim().isEmpty()) value = currentReplies.direct;
+        if (value == null || value.trim().isEmpty()) return;
+        answerText.setText(value.trim());
         answerText.setAlpha(1f);
+    }
+
+    private static String selectedReply(OpenAiCopilotClient.Replies replies, int index) {
+        switch (index) {
+            case 1: return replies.sarcastic;
+            case 2: return replies.funny;
+            case 3: return replies.calm;
+            default: return replies.direct;
+        }
     }
 
     private String styleLabel(int index) {
@@ -299,11 +304,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private String simplifyStatus(String value) {
         if (value == null) return "Слушам";
         String lower = value.toLowerCase(Locale.ROOT);
-        if (lower.contains("липсва") && lower.contains("api")) return "Няма API key";
+        if (lower.contains("няма api") || (lower.contains("липсва") && lower.contains("api"))) return "Няма API key";
         if (lower.contains("разпознав")) return "Разпознавам…";
-        if (lower.contains("4 отговора") || lower.contains("генерирам") || lower.contains("контекст")) return "Мисля…";
-        if (lower.contains("грешка") || lower.contains("error")) return "Проблем с AI връзката";
-        if (lower.contains("готово") || lower.contains("продължавам") || lower.equals("слушам…")) return "Слушам";
+        if (lower.contains("мисля") || lower.contains("генерирам") || lower.contains("контекст")) return "Мисля…";
+        if (lower.contains("грешка") || lower.contains("error") || lower.contains("прекъсна")) return "Проблем с AI връзката";
+        if (lower.contains("готово") || lower.contains("продължавам") || lower.equals("слушам…") || lower.equals("слушам")) return "Слушам";
         return shorten(value, 38);
     }
 
