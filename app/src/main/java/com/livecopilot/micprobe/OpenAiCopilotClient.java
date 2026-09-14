@@ -47,12 +47,14 @@ final class OpenAiCopilotClient {
         final int sampleRate;
         final long createdAtMs;
         final long sessionSerial;
+        final long inputSerial;
 
-        AudioItem(short[] samples, int sampleRate, long sessionSerial) {
+        AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial) {
             this.samples = samples;
             this.sampleRate = sampleRate;
             this.createdAtMs = System.currentTimeMillis();
             this.sessionSerial = sessionSerial;
+            this.inputSerial = inputSerial;
         }
     }
 
@@ -79,7 +81,7 @@ final class OpenAiCopilotClient {
 
     private static final int MAX_AUDIO_QUEUE = 2;
     private static final int MAX_TURNS = 8;
-    private static final long MAX_AUDIO_AGE_MS = 10_000L;
+    private static final long MAX_AUDIO_AGE_MS = FileSttFreshnessPolicy.MAX_SURFACE_AGE_MS;
     private static final long CONTEXT_IDLE_RESET_MS = 45_000L;
     private static final long ENGAGEMENT_GAP_MS = 12_000L;
     private static final long MAX_REPLY_AGE_MS = 12_000L;
@@ -100,6 +102,7 @@ final class OpenAiCopilotClient {
     private boolean audioWorkerRunning;
     private boolean closed;
     private long sessionSerial = 1L;
+    private long latestInputSerial;
     private long latestReplySerial;
     private long lastReplyAtMs;
     private long firstSpeechAtMs;
@@ -117,6 +120,7 @@ final class OpenAiCopilotClient {
 
     synchronized void resetSession() {
         sessionSerial++;
+        latestInputSerial = 0L;
         latestReplySerial++;
         audioQueue.clear();
         recentTurns.clear();
@@ -139,7 +143,9 @@ final class OpenAiCopilotClient {
         prepareContextFor(value, now);
         String novel = commitTranscript(value, now);
         if (!novel.isEmpty()) {
-            // A newer accepted Realtime transcript makes any older file-reply job stale.
+            // A newer accepted Realtime transcript makes any older file-STT result
+            // and file-reply job stale for the live overlay.
+            latestInputSerial++;
             latestReplySerial++;
             if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
         }
@@ -178,11 +184,14 @@ final class OpenAiCopilotClient {
     synchronized void submitAudio(short[] samples, int sampleRate) {
         if (closed || samples == null || samples.length == 0) return;
         long now = System.currentTimeMillis();
+        long inputSerial = ++latestInputSerial;
+        // New speech immediately invalidates reply work from older file audio.
+        latestReplySerial++;
         while (!audioQueue.isEmpty() && now - audioQueue.peekFirst().createdAtMs > MAX_AUDIO_AGE_MS) {
             audioQueue.removeFirst();
         }
         while (audioQueue.size() >= MAX_AUDIO_QUEUE) audioQueue.removeFirst();
-        audioQueue.addLast(new AudioItem(samples.clone(), sampleRate, sessionSerial));
+        audioQueue.addLast(new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial));
         if (!audioWorkerRunning) {
             audioWorkerRunning = true;
             audioExecutor.execute(this::drainAudio);
@@ -231,6 +240,13 @@ final class OpenAiCopilotClient {
             prepareContextFor(useful, now);
             String focus = commitTranscript(useful, now);
             if (focus.isEmpty()) {
+                listener.onStatus("Слушам");
+                return;
+            }
+
+            // Keep stale speech in internal context, but never surface it over newer
+            // live input or after it has become too old to be useful on screen.
+            if (!shouldSurfaceAudioResult(item)) {
                 listener.onStatus("Слушам");
                 return;
             }
@@ -399,6 +415,13 @@ final class OpenAiCopilotClient {
                 lastSarcasticReply,
                 lastFunnyReply,
                 lastCalmReply);
+    }
+
+    private synchronized boolean shouldSurfaceAudioResult(AudioItem item) {
+        long ageMs = Math.max(0L, System.currentTimeMillis() - item.createdAtMs);
+        boolean sessionMatches = !closed && item.sessionSerial == sessionSerial;
+        return FileSttFreshnessPolicy.shouldSurface(
+                item.inputSerial, latestInputSerial, ageMs, sessionMatches);
     }
 
     private synchronized boolean isCurrentSession(long serial) {
