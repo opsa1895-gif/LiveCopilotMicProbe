@@ -249,9 +249,11 @@ final class RealtimeTranscriptionClient {
             return;
         }
 
-        reconnectAttempt = 0;
         reconnectScheduled = false;
         ready = true;
+        long stableGeneration = generation;
+        scheduler.schedule(() -> markConnectionStable(ws, stableGeneration),
+                RealtimeReconnectPolicy.STABLE_RESET_MS, TimeUnit.MILLISECONDS);
         listener.onState("ready");
     }
 
@@ -282,6 +284,7 @@ final class RealtimeTranscriptionClient {
                 turn = committedTurnSerial;
                 awaitingCompletion = false;
                 partial.setLength(0);
+                reconnectAttempt = 0;
                 if (!transcript.isEmpty()) {
                     clearPendingBackupLocked(turn);
                 } else {
@@ -509,6 +512,11 @@ final class RealtimeTranscriptionClient {
         listener.onState("fallback");
         try { ws.close(1011, "context_update_failed"); } catch (Throwable ignored) {}
         scheduleReconnect();
+    }
+
+    private synchronized void markConnectionStable(WebSocket ws, long stableGeneration) {
+        if (closed || !wanted || generation != stableGeneration || socket != ws || !ready) return;
+        reconnectAttempt = 0;
     }
 
     private synchronized void scheduleReconnect() {

@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 40
-        versionName = "0.39.0-realtime-watchdog"
+        versionCode = 41
+        versionName = "0.40.0-reconnect-stability"
     }
 
     compileOptions {

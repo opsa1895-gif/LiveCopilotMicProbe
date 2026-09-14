@@ -1,6 +1,8 @@
 package com.livecopilot.micprobe;
 
 final class RealtimeReconnectPolicy {
+    static final long STABLE_RESET_MS = 15_000L;
+
     private RealtimeReconnectPolicy() {}
 
     static long delayMs(int attempt) {
