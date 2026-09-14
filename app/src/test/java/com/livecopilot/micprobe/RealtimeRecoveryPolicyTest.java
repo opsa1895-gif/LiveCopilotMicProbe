@@ -26,4 +26,10 @@ public class RealtimeRecoveryPolicyTest {
     public void oldSessionCannotDeliver() {
         assertFalse(RealtimeRecoveryPolicy.shouldDeliver(3L, 3L, 1_000L, false));
     }
+
+    @Test
+    public void recoveryFromOlderSpeechEpochIsSuperseded() {
+        assertTrue(RealtimeRecoveryPolicy.isSuperseded(4L, 5L));
+        assertFalse(RealtimeRecoveryPolicy.isSuperseded(5L, 5L));
+    }
 }

@@ -5,6 +5,10 @@ final class RealtimeRecoveryPolicy {
 
     private RealtimeRecoveryPolicy() {}
 
+    static boolean isSuperseded(long committedSpeechEpoch, long currentSpeechEpoch) {
+        return committedSpeechEpoch != currentSpeechEpoch;
+    }
+
     static boolean shouldDeliver(long recoveryId, long latestRecoveryId, long ageMs, boolean sessionMatches) {
         return sessionMatches
                 && recoveryId > 0L

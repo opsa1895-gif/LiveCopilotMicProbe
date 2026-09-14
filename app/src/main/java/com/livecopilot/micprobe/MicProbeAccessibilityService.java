@@ -179,6 +179,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     @Override
     public void onStreamTurnStart(int sampleRate) {
         clearFallbackTurnAudio();
+        if (realtimeTranscriber != null) realtimeTranscriber.noteNewSpeech();
         realtimeTurnActive = realtimeTranscriber != null && realtimeTranscriber.beginTurn(sampleRate);
     }
 
