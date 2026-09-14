@@ -20,6 +20,10 @@ final class SemanticReplyFallback {
     }
 
     private static final long MAX_REQUEST_AGE_MS = 12_000L;
+    private static final int DECISION_CONNECT_TIMEOUT_MS = 4_000;
+    private static final int DECISION_READ_TIMEOUT_MS = 7_000;
+    private static final int STYLE_CONNECT_TIMEOUT_MS = 5_000;
+    private static final int STYLE_READ_TIMEOUT_MS = 10_000;
 
     private final Context context;
     private final Listener listener;
@@ -76,7 +80,8 @@ final class SemanticReplyFallback {
                     "<previous_suggestion>\n" + shorten(previousSuggestion, 180) + "\n</previous_suggestion>";
             req.put("input", input(system, user));
 
-            HttpResult result = post(req, key, 12_000);
+            HttpResult result = post(
+                    req, key, DECISION_CONNECT_TIMEOUT_MS, DECISION_READ_TIMEOUT_MS);
             if (result.code < 200 || result.code >= 300 || !isCurrent(requestId, createdAt)) return;
 
             JSONObject json = parseJsonText(result.body);
@@ -113,7 +118,8 @@ final class SemanticReplyFallback {
                     "<direct>\n" + shorten(direct, 180) + "\n</direct>";
             req.put("input", input(system, user));
 
-            HttpResult result = post(req, key, 18_000);
+            HttpResult result = post(
+                    req, key, STYLE_CONNECT_TIMEOUT_MS, STYLE_READ_TIMEOUT_MS);
             if (result.code < 200 || result.code >= 300 || !isCurrent(requestId, createdAt)) return;
 
             JSONObject json = parseJsonText(result.body);
@@ -138,11 +144,12 @@ final class SemanticReplyFallback {
         return req;
     }
 
-    private HttpResult post(JSONObject req, String key, int readTimeoutMs) throws Exception {
+    private HttpResult post(JSONObject req, String key, int connectTimeoutMs,
+                            int readTimeoutMs) throws Exception {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL("https://api.openai.com/v1/responses").openConnection();
-            c.setConnectTimeout(8_000);
+            c.setConnectTimeout(connectTimeoutMs);
             c.setReadTimeout(readTimeoutMs);
             c.setRequestMethod("POST");
             c.setDoOutput(true);
