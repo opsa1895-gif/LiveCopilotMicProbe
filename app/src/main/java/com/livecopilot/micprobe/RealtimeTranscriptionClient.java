@@ -275,7 +275,6 @@ final class RealtimeTranscriptionClient {
                 }
             }
             if (!transcript.isEmpty()) {
-                rememberTranscript(transcript);
                 listener.onFinal(turn, transcript);
             } else {
                 recoverCommittedTurn(turn, fallbackGeneration, "empty");
@@ -384,7 +383,6 @@ final class RealtimeTranscriptionClient {
             if (!deliver) return;
 
             if (!transcript.isEmpty()) {
-                rememberTranscript(transcript);
                 listener.onFinal(turn, transcript);
             } else {
                 listener.onState("fallback_failed");
@@ -458,7 +456,7 @@ final class RealtimeTranscriptionClient {
         return out.toString();
     }
 
-    private void rememberTranscript(String transcript) {
+    void rememberAcceptedTranscript(String transcript) {
         contextWindow.add(transcript, System.currentTimeMillis());
 
         WebSocket ws;
