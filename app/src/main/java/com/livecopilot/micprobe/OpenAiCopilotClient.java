@@ -84,6 +84,10 @@ final class OpenAiCopilotClient {
     private static final long ENGAGEMENT_GAP_MS = 12_000L;
     private static final long MAX_REPLY_AGE_MS = 12_000L;
     private static final long SELF_ECHO_WINDOW_MS = 12_000L;
+    private static final int PRIMARY_CONNECT_TIMEOUT_MS = 5_000;
+    private static final int PRIMARY_READ_TIMEOUT_MS = 8_000;
+    private static final int STYLE_CONNECT_TIMEOUT_MS = 8_000;
+    private static final int STYLE_READ_TIMEOUT_MS = 18_000;
 
     private final Context context;
     private final Listener listener;
@@ -449,7 +453,8 @@ final class OpenAiCopilotClient {
         String user = "<live_context>\n" + fullContext + "\n</live_context>\n" +
                 "<focus>\n" + focus + "\n</focus>\n" +
                 "<previous_suggestion>\n" + previousSuggestion + "\n</previous_suggestion>";
-        HttpResult r = responses(key, request(system, user, 90));
+        HttpResult r = responses(key, request(system, user, 90),
+                PRIMARY_CONNECT_TIMEOUT_MS, PRIMARY_READ_TIMEOUT_MS, 1);
         if (r.code < 200 || r.code >= 300) throw new IllegalStateException("reply " + r.code);
         return modelLine(extractText(new JSONObject(r.body)));
     }
@@ -470,7 +475,8 @@ final class OpenAiCopilotClient {
                 "<primary>\n" + direct + "\n</primary>\n" +
                 "<previous_suggestion>\n" + previousSuggestion + "\n</previous_suggestion>\n" +
                 "<mode>" + (engagement ? "engagement" : "reply") + "</mode>";
-        HttpResult r = responses(key, request(system, user, 250));
+        HttpResult r = responses(key, request(system, user, 250),
+                STYLE_CONNECT_TIMEOUT_MS, STYLE_READ_TIMEOUT_MS, 1);
         if (r.code < 200 || r.code >= 300) throw new IllegalStateException("variants " + r.code);
 
         String text = extractText(new JSONObject(r.body)).trim();
@@ -513,23 +519,27 @@ final class OpenAiCopilotClient {
         return req;
     }
 
-    private HttpResult responses(String key, JSONObject req) throws Exception {
+    private HttpResult responses(String key, JSONObject req, int connectTimeoutMs,
+                                 int readTimeoutMs, int maxAttempts) throws Exception {
+        int attempts = Math.max(1, maxAttempts);
         Exception last = null;
-        for (int attempt = 0; attempt < 2; attempt++) {
+        for (int attempt = 0; attempt < attempts; attempt++) {
             try {
-                HttpURLConnection c = connection("https://api.openai.com/v1/responses", key, 35_000);
+                HttpURLConnection c = connection("https://api.openai.com/v1/responses", key, readTimeoutMs);
+                c.setConnectTimeout(Math.max(1_000, connectTimeoutMs));
                 c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
                 c.getOutputStream().write(req.toString().getBytes(StandardCharsets.UTF_8));
                 int code = c.getResponseCode();
                 String body = read(c, code);
-                if ((code == 429 || code >= 500) && attempt == 0) {
-                    Thread.sleep(450L);
+                boolean retryable = code == 429 || code >= 500;
+                if (retryable && attempt + 1 < attempts) {
+                    Thread.sleep(350L);
                     continue;
                 }
                 return new HttpResult(code, body);
             } catch (Exception e) {
                 last = e;
-                if (attempt == 0) Thread.sleep(450L);
+                if (attempt + 1 < attempts) Thread.sleep(350L);
             }
         }
         throw last == null ? new IllegalStateException("responses") : last;
