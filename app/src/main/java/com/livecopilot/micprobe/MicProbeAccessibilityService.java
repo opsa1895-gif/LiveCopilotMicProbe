@@ -28,7 +28,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     private static final long SELF_ECHO_WINDOW_MS = 12_000L;
     private static final long CROSS_SOURCE_DEDUP_WINDOW_MS = 6_000L;
-    private static final int SEMANTIC_CONTEXT_TURNS = 6;
+    private static final int SEMANTIC_CONTEXT_TURNS = 10;
+    private static final int SEMANTIC_CONTEXT_MAX_CHARS = 900;
     private static final int MAX_FALLBACK_AUDIO_SAMPLES = 16_000 * 12;
 
     private WindowManager windowManager;
@@ -476,12 +477,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     private String buildSemanticContext() {
-        StringBuilder out = new StringBuilder();
-        for (String turn : semanticTurns) {
-            if (out.length() > 0) out.append('\n');
-            out.append("- ").append(turn);
-        }
-        return out.toString();
+        return SemanticContextPolicy.buildRecent(semanticTurns, SEMANTIC_CONTEXT_MAX_CHARS);
     }
 
     private static boolean isSemanticTopicShift(String value) {
