@@ -130,6 +130,51 @@ final class OpenAiCopilotClient {
         lastTranscriptAtMs = 0L;
     }
 
+    synchronized void rememberAcceptedTranscript(String transcript) {
+        if (closed) return;
+        String value = clean(transcript);
+        if (value.length() < 2) return;
+
+        long now = System.currentTimeMillis();
+        prepareContextFor(value, now);
+        String novel = commitTranscript(value, now);
+        if (!novel.isEmpty()) {
+            // A newer accepted Realtime transcript makes any older file-reply job stale.
+            latestReplySerial++;
+            if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
+        }
+    }
+
+    synchronized void rememberShownReplies(Replies replies, long shownAtMs) {
+        if (closed || replies == null) return;
+
+        String direct = clean(replies.direct);
+        String sarcastic = clean(replies.sarcastic);
+        String funny = clean(replies.funny);
+        String calm = clean(replies.calm);
+        if (direct.isEmpty() && sarcastic.isEmpty() && funny.isEmpty() && calm.isEmpty()) return;
+
+        // External semantic replies must also invalidate older file-reply jobs and
+        // seed file-STT self-echo suppression with what the user actually saw.
+        latestReplySerial++;
+        if (!direct.isEmpty()) lastDirectReply = shorten(direct, 180);
+
+        boolean primaryOnly = !direct.isEmpty()
+                && sarcastic.isEmpty() && funny.isEmpty() && calm.isEmpty();
+        if (primaryOnly) {
+            lastSarcasticReply = "";
+            lastFunnyReply = "";
+            lastCalmReply = "";
+        } else {
+            if (!sarcastic.isEmpty()) lastSarcasticReply = shorten(sarcastic, 180);
+            if (!funny.isEmpty()) lastFunnyReply = shorten(funny, 180);
+            if (!calm.isEmpty()) lastCalmReply = shorten(calm, 180);
+        }
+
+        long effectiveAt = shownAtMs > 0L ? shownAtMs : System.currentTimeMillis();
+        lastReplyAtMs = Math.max(lastReplyAtMs, effectiveAt);
+    }
+
     synchronized void submitAudio(short[] samples, int sampleRate) {
         if (closed || samples == null || samples.length == 0) return;
         long now = System.currentTimeMillis();
