@@ -1,0 +1,195 @@
+name: Apply v0.21 self-echo integration
+
+on:
+  push:
+    branches: [copilot-v0-21-self-echo]
+    paths:
+      - .github/workflows/apply-v021-self-echo.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[v021-applied]') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: copilot-v0-21-self-echo
+          fetch-depth: 0
+
+      - name: Apply guarded source patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              s = p.read_text(encoding='utf-8')
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected 1 match, got {count} for {old[:80]!r}')
+              p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          service = 'app/src/main/java/com/livecopilot/micprobe/MicProbeAccessibilityService.java'
+          client = 'app/src/main/java/com/livecopilot/micprobe/OpenAiCopilotClient.java'
+          gradle = 'app/build.gradle.kts'
+
+          replace_once(service,
+              '    private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;\n',
+              '    private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;\n'
+              '    private static final long SELF_ECHO_WINDOW_MS = 12_000L;\n')
+
+          replace_once(service,
+              '    private long lastSemanticTranscriptAtMs;\n    private long semanticAnswerBaselineMs;\n',
+              '    private long lastSemanticTranscriptAtMs;\n    private long lastSelfEchoAtMs;\n    private long semanticAnswerBaselineMs;\n')
+
+          replace_once(service,
+              '        lastTranscript = clean;\n        if (!clean.isEmpty()) {\n',
+              '        lastTranscript = clean;\n'
+              '        if (!clean.isEmpty() && isLikelySelfEcho(clean, now)) {\n'
+              '            lastSelfEchoAtMs = now;\n'
+              '            pendingSemanticFocus = "";\n'
+              '            aiStatus = "Слушам";\n'
+              '            renderStatus();\n'
+              '            renderDebug();\n'
+              '            return;\n'
+              '        }\n'
+              '        if (!clean.isEmpty()) {\n')
+
+          replace_once(service,
+              '    private String buildSemanticContext() {\n',
+              '    private boolean isLikelySelfEcho(String transcript, long now) {\n'
+              '        if (currentReplies == null || answerUpdatedAtMs <= 0L) return false;\n'
+              '        long age = now - answerUpdatedAtMs;\n'
+              '        if (age < 0L || age > SELF_ECHO_WINDOW_MS) return false;\n'
+              '        return SelfEchoFilter.matchesAny(\n'
+              '                transcript,\n'
+              '                currentReplies.direct,\n'
+              '                currentReplies.sarcastic,\n'
+              '                currentReplies.funny,\n'
+              '                currentReplies.calm);\n'
+              '    }\n\n'
+              '    private String buildSemanticContext() {\n')
+
+          replace_once(service,
+              '            lastSemanticTranscriptAtMs = 0L;\n            semanticAnswerBaselineMs = 0L;\n',
+              '            lastSemanticTranscriptAtMs = 0L;\n            lastSelfEchoAtMs = 0L;\n            semanticAnswerBaselineMs = 0L;\n')
+
+          replace_once(service,
+              '        debugText.setText(app + " • " + mic + rt + heard + partial + latency);\n',
+              '        String echo = lastSelfEchoAtMs > 0L\n'
+              '                && System.currentTimeMillis() - lastSelfEchoAtMs < 5_000L ? " • echo" : "";\n'
+              '        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency);\n')
+
+          replace_once(client,
+              '    private static final long MAX_REPLY_AGE_MS = 12_000L;\n',
+              '    private static final long MAX_REPLY_AGE_MS = 12_000L;\n'
+              '    private static final long SELF_ECHO_WINDOW_MS = 12_000L;\n')
+
+          replace_once(client,
+              '    private String summary = "";\n    private String lastDirectReply = "";\n',
+              '    private String summary = "";\n'
+              '    private String lastDirectReply = "";\n'
+              '    private String lastSarcasticReply = "";\n'
+              '    private String lastFunnyReply = "";\n'
+              '    private String lastCalmReply = "";\n')
+
+          replace_once(client,
+              '        summary = "";\n        lastDirectReply = "";\n        lastReplyAtMs = 0L;\n',
+              '        summary = "";\n'
+              '        lastDirectReply = "";\n'
+              '        lastSarcasticReply = "";\n'
+              '        lastFunnyReply = "";\n'
+              '        lastCalmReply = "";\n'
+              '        lastReplyAtMs = 0L;\n')
+
+          replace_once(client,
+              '            listener.onTranscript(focus);\n            synchronized (this) {\n',
+              '            listener.onTranscript(focus);\n'
+              '            if (isRecentSelfEcho(focus, now)) {\n'
+              '                listener.onStatus("Слушам");\n'
+              '                return;\n'
+              '            }\n'
+              '            synchronized (this) {\n')
+
+          replace_once(client,
+              '        recentTurns.clear();\n        summary = "";\n        lastDirectReply = "";\n        lastReplyAtMs = 0L;\n',
+              '        recentTurns.clear();\n'
+              '        summary = "";\n'
+              '        lastDirectReply = "";\n'
+              '        lastSarcasticReply = "";\n'
+              '        lastFunnyReply = "";\n'
+              '        lastCalmReply = "";\n'
+              '        lastReplyAtMs = 0L;\n')
+
+          replace_once(client,
+              '            synchronized (this) {\n                lastDirectReply = primary;\n                lastReplyAtMs = System.currentTimeMillis();\n            }\n',
+              '            synchronized (this) {\n'
+              '                lastDirectReply = primary;\n'
+              '                lastSarcasticReply = "";\n'
+              '                lastFunnyReply = "";\n'
+              '                lastCalmReply = "";\n'
+              '                lastReplyAtMs = System.currentTimeMillis();\n'
+              '            }\n')
+
+          replace_once(client,
+              '            synchronized (this) {\n                lastDirectReply = direct;\n                lastReplyAtMs = System.currentTimeMillis();\n            }\n            listener.onReplies(new Replies(direct, local.sarcastic, local.funny, local.calm));\n',
+              '            synchronized (this) {\n'
+              '                lastDirectReply = direct;\n'
+              '                lastSarcasticReply = local.sarcastic;\n'
+              '                lastFunnyReply = local.funny;\n'
+              '                lastCalmReply = local.calm;\n'
+              '                lastReplyAtMs = System.currentTimeMillis();\n'
+              '            }\n'
+              '            listener.onReplies(new Replies(direct, local.sarcastic, local.funny, local.calm));\n')
+
+          replace_once(client,
+              '            synchronized (this) {\n                if (!complete.direct.isEmpty()) lastDirectReply = complete.direct;\n            }\n            listener.onReplies(complete);\n',
+              '            synchronized (this) {\n'
+              '                if (!complete.direct.isEmpty()) lastDirectReply = complete.direct;\n'
+              '                lastSarcasticReply = complete.sarcastic;\n'
+              '                lastFunnyReply = complete.funny;\n'
+              '                lastCalmReply = complete.calm;\n'
+              '            }\n'
+              '            listener.onReplies(complete);\n')
+
+          replace_once(client,
+              '            ReplyGenerator.Replies local = ReplyGenerator.generate(job.context, job.focus);\n            listener.onReplies(new Replies(primary, local.sarcastic, local.funny, local.calm));\n',
+              '            ReplyGenerator.Replies local = ReplyGenerator.generate(job.context, job.focus);\n'
+              '            synchronized (this) {\n'
+              '                lastSarcasticReply = local.sarcastic;\n'
+              '                lastFunnyReply = local.funny;\n'
+              '                lastCalmReply = local.calm;\n'
+              '            }\n'
+              '            listener.onReplies(new Replies(primary, local.sarcastic, local.funny, local.calm));\n')
+
+          replace_once(client,
+              '    private synchronized boolean isCurrentSession(long serial) {\n',
+              '    private synchronized boolean isRecentSelfEcho(String focus, long now) {\n'
+              '        if (lastReplyAtMs <= 0L || now < lastReplyAtMs\n'
+              '                || now - lastReplyAtMs > SELF_ECHO_WINDOW_MS) return false;\n'
+              '        return SelfEchoFilter.matchesAny(\n'
+              '                focus,\n'
+              '                lastDirectReply,\n'
+              '                lastSarcasticReply,\n'
+              '                lastFunnyReply,\n'
+              '                lastCalmReply);\n'
+              '    }\n\n'
+              '    private synchronized boolean isCurrentSession(long serial) {\n')
+
+          replace_once(gradle,
+              '        versionCode = 20\n        versionName = "0.20.0-nonblocking-styles"\n',
+              '        versionCode = 21\n        versionName = "0.21.0-self-echo"\n')
+
+      - name: Commit patched sources
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/livecopilot/micprobe/MicProbeAccessibilityService.java \
+                  app/src/main/java/com/livecopilot/micprobe/OpenAiCopilotClient.java \
+                  app/build.gradle.kts
+          git diff --cached --check
+          git commit -m "v0.21: integrate self-echo suppression [v021-applied]"
+          git push origin HEAD:copilot-v0-21-self-echo
