@@ -23,8 +23,8 @@ final class SemanticReplyFallback {
 
     private final Context context;
     private final Listener listener;
-    private final ExecutorService decisionExecutor = Executors.newFixedThreadPool(2);
-    private final ExecutorService variantExecutor = Executors.newSingleThreadExecutor();
+    private final LatestWinsExecutor decisionExecutor = new LatestWinsExecutor(2);
+    private final LatestWinsExecutor variantExecutor = new LatestWinsExecutor(1);
     private long serial;
     private boolean closed;
 
