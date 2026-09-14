@@ -32,25 +32,7 @@ replace_exact_count(
     '''            if (!transcript.isEmpty()) {
                 listener.onFinal(turn, transcript);
 ''',
-    1,
-)
-
-replace_exact_count(
-    rt,
-    '''            if (!transcript.isEmpty()) {
-                rememberTranscript(transcript);
-                listener.onFinal(turn, transcript);
-            } else {
-                listener.onState("fallback_failed");
-            }
-''',
-    '''            if (!transcript.isEmpty()) {
-                listener.onFinal(turn, transcript);
-            } else {
-                listener.onState("fallback_failed");
-            }
-''',
-    1,
+    2,
 )
 
 replace_once(
