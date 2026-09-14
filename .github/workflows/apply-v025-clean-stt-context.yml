@@ -1,0 +1,33 @@
+name: Apply v0.25 clean STT context
+
+on:
+  push:
+    branches: [copilot-v0-25-clean-stt-context]
+    paths:
+      - .github/workflows/apply-v025-clean-stt-context.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: copilot-v0-25-clean-stt-context
+          fetch-depth: 0
+
+      - name: Apply guarded source patch
+        run: python .github/scripts/apply_v025.py
+
+      - name: Commit patched sources
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/livecopilot/micprobe/RealtimeTranscriptionClient.java \
+                  app/src/main/java/com/livecopilot/micprobe/MicProbeAccessibilityService.java \
+                  app/build.gradle.kts
+          git diff --cached --check
+          git commit -m "v0.25: keep realtime STT context echo-free [v025-applied]"
+          git push origin HEAD:copilot-v0-25-clean-stt-context
