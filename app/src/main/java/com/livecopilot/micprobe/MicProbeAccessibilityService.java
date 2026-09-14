@@ -64,6 +64,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private boolean hasStartedSession;
     private volatile boolean realtimeTurnActive;
     private volatile boolean realtimeBackupStreaming;
+    private volatile long realtimeSpeechEpoch = -1L;
     private short[] fallbackTurnAudio;
     private int fallbackTurnSampleRate = 16_000;
     private long lastRealtimeTurnSerial;
@@ -108,16 +109,13 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             }
 
             @Override
-            public void onPartial(String partial) {
-                getMainExecutor().execute(() -> {
-                    realtimePartial = partial == null ? "" : partial;
-                    renderDebug();
-                });
+            public void onPartial(long speechEpoch, String partial) {
+                getMainExecutor().execute(() -> handleRealtimePartial(speechEpoch, partial));
             }
 
             @Override
-            public void onFinal(long turnSerial, String transcript) {
-                getMainExecutor().execute(() -> handleRealtimeFinal(turnSerial, transcript));
+            public void onFinal(long turnSerial, long speechEpoch, String transcript) {
+                getMainExecutor().execute(() -> handleRealtimeFinal(turnSerial, speechEpoch, transcript));
             }
         });
         showOverlay();
@@ -179,7 +177,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     @Override
-    public void onStreamTurnStart(int sampleRate) {
+    public synchronized void onStreamTurnStart(int sampleRate) {
         clearFallbackTurnAudio();
         realtimePartial = "";
 
@@ -191,7 +189,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         semanticPrimaryAppliedAtMs = 0L;
         pendingSemanticFocus = "";
 
-        if (realtimeTranscriber != null) realtimeTranscriber.noteNewSpeech();
+        realtimeSpeechEpoch = realtimeTranscriber != null
+                ? realtimeTranscriber.noteNewSpeech()
+                : -1L;
         realtimeTurnActive = realtimeTranscriber != null && realtimeTranscriber.beginTurn(sampleRate);
         // Only turns that actually entered Realtime need a contiguous emergency
         // backup. Pure file-fallback turns keep using the chunk/overlap path.
@@ -221,10 +221,17 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         realtimeTurnActive = false;
         realtimeBackupStreaming = false;
-        if (!hadRealtimeBackup) return;
+        if (!hadRealtimeBackup) {
+            realtimeSpeechEpoch = -1L;
+            return;
+        }
 
-        if (!committed) submitBufferedFallback();
-        else clearFallbackTurnAudio();
+        if (!committed) {
+            realtimeSpeechEpoch = -1L;
+            submitBufferedFallback();
+        } else {
+            clearFallbackTurnAudio();
+        }
     }
 
     @Override
@@ -245,9 +252,19 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         acceptTranscript(transcript, false);
     }
 
-    private void handleRealtimeFinal(long turnSerial, String transcript) {
+    private synchronized void handleRealtimePartial(long speechEpoch, String partial) {
+        if (!RealtimeEventFreshnessPolicy.shouldAccept(speechEpoch, realtimeSpeechEpoch)) return;
+        if (engine == null || !engine.isRunning()) return;
+        realtimePartial = partial == null ? "" : partial;
+        renderDebug();
+    }
+
+    private synchronized void handleRealtimeFinal(long turnSerial, long speechEpoch, String transcript) {
+        if (!RealtimeEventFreshnessPolicy.shouldAccept(speechEpoch, realtimeSpeechEpoch)) return;
+        if (engine == null || !engine.isRunning()) return;
         if (turnSerial <= lastRealtimeTurnSerial) return;
         lastRealtimeTurnSerial = turnSerial;
+        realtimeSpeechEpoch = -1L;
         realtimePartial = "";
         acceptTranscript(transcript, true);
     }
@@ -645,6 +662,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             pendingSemanticFocus = "";
             realtimeTurnActive = false;
             realtimeBackupStreaming = false;
+            realtimeSpeechEpoch = -1L;
+            realtimePartial = "";
             clearFallbackTurnAudio();
             aiStatus = "Пауза";
             renderStatus();
@@ -665,6 +684,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             lastAcceptedSourceAtMs = 0L;
             lastAcceptedFromRealtime = false;
             realtimePartial = "";
+            realtimeSpeechEpoch = -1L;
             lastRealtimeTurnSerial = 0L;
             lastFileTranscriptAtMs = 0L;
             lastRealtimeTranscriptAtMs = 0L;
