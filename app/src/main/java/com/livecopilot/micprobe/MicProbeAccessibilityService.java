@@ -228,12 +228,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         realtimeBackupStreaming = false;
         if (!hadRealtimeBackup) {
             realtimeSpeechEpoch = -1L;
+            finishFileTurn();
             return;
         }
 
         if (!committed) {
             realtimeSpeechEpoch = -1L;
             submitBufferedFallback();
+            finishFileTurn();
         } else {
             clearFallbackTurnAudio();
         }
@@ -250,6 +252,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         short[] candidate = takeFallbackPlus(samples, sampleRate);
         short[] prepared = AudioPreprocessor.prepare(candidate, sampleRate);
         if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate, fileSpeechEpoch);
+    }
+
+    private void finishFileTurn() {
+        if (aiClient == null || engine == null || !engine.isRunning()) return;
+        aiClient.finishAudioTurn(fileSpeechEpoch);
     }
 
     @Override
@@ -415,6 +422,29 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     @Override
+    public void onFileTurnComplete(
+            long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued) {
+        getMainExecutor().execute(() -> handleFileTurnComplete(
+                sessionSerial, inputSerial, turnFocus, mainReplyQueued));
+    }
+
+    private synchronized void handleFileTurnComplete(
+            long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued) {
+        if (aiClient == null
+                || !aiClient.isTranscriptCallbackCurrent(sessionSerial, inputSerial)) return;
+        if (engine == null || !engine.isRunning()) return;
+
+        if (!FileTurnReplyPolicy.shouldUseSemanticFallback(mainReplyQueued, turnFocus)) {
+            pendingSemanticFocus = "";
+            return;
+        }
+
+        pendingSemanticFocus = turnFocus.trim();
+        pendingSemanticAtMs = Math.max(System.currentTimeMillis(), answerUpdatedAtMs + 1L);
+        scheduleSemanticFallbackIfNeeded();
+    }
+
+    @Override
     public void onStatus(long sessionSerial, long workSerial, boolean replyWork, String status) {
         getMainExecutor().execute(() ->
                 handleFileStatus(sessionSerial, workSerial, replyWork, status));
@@ -438,7 +468,6 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         aiStatus = simplifyStatus(raw);
         renderStatus();
         renderDebug();
-        if (isListeningStatus(raw)) scheduleSemanticFallbackIfNeeded();
     }
 
     private void scheduleSemanticFallbackIfNeeded() {
@@ -573,11 +602,6 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 || v.startsWith("нов въпрос")
                 || v.startsWith("друго нещо")
                 || v.startsWith("сменям темата");
-    }
-
-    private static boolean isListeningStatus(String status) {
-        String lower = status == null ? "" : status.toLowerCase(Locale.ROOT).trim();
-        return lower.equals("слушам") || lower.equals("слушам…") || lower.contains("продължавам да слушам");
     }
 
     private void loadUiState() {
