@@ -265,30 +265,39 @@ final class OpenAiCopilotClient {
             }
 
             long now = System.currentTimeMillis();
-            String useful = removeRecentSelfEcho(raw, now);
-            if (useful.isEmpty()) {
-                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
-                return;
+            String focus;
+            synchronized (this) {
+                // File STT may finish after newer speech has already started. Check
+                // freshness while holding the same monitor used for conversation
+                // mutations so stale audio cannot alter recentTurns, summary/reset
+                // state, or lastTranscriptAtMs between a check and the write.
+                if (!isFreshAudioResultLocked(item)) {
+                    focus = "";
+                } else {
+                    String useful = removeRecentSelfEcho(raw, now);
+                    if (useful.isEmpty()) {
+                        focus = "";
+                    } else {
+                        prepareContextFor(useful, now);
+                        focus = commitTranscript(useful, now);
+                        if (!focus.isEmpty() && firstSpeechAtMs == 0L) firstSpeechAtMs = now;
+                    }
+                }
             }
-
-            prepareContextFor(useful, now);
-            String focus = commitTranscript(useful, now);
             if (focus.isEmpty()) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                 return;
             }
 
-            // Keep stale speech in internal context, but never surface it over newer
-            // live input or after it has become too old to be useful on screen.
+            // Re-check after the atomic context commit: newer speech may start after
+            // the lock is released, in which case this older transcript must not be
+            // surfaced even though it was valid context at commit time.
             if (!shouldSurfaceAudioResult(item)) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                 return;
             }
 
             listener.onTranscript(item.sessionSerial, item.inputSerial, focus);
-            synchronized (this) {
-                if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
-            }
 
             boolean actionable = isActionable(focus);
             long reference;
@@ -484,7 +493,7 @@ final class OpenAiCopilotClient {
     private boolean isFreshAudioResultLocked(AudioItem item) {
         long ageMs = Math.max(0L, System.currentTimeMillis() - item.createdAtMs);
         boolean sessionMatches = !closed && item.sessionSerial == sessionSerial;
-        return FileSttFreshnessPolicy.shouldSurface(
+        return FileSttFreshnessPolicy.shouldAccept(
                 item.inputSerial, latestInputSerial, ageMs, sessionMatches);
     }
 
