@@ -374,6 +374,10 @@ final class OpenAiCopilotClient {
         }
         if (raw == null) return;
         if (TranscriptQualityPolicy.isLowQuality(raw)) {
+            // A current speech chunk that produced unusable STT still lowers turn
+            // coverage. This prevents a misleading 100% confidence score when the
+            // network succeeded but recognition did not yield usable text.
+            noteFileSttFailure(item, false);
             listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
             return;
         }
