@@ -132,13 +132,19 @@ final class RealtimeTranscriptionClient {
             return false;
         }
 
+        WebSocket failedSocket = socket;
         boolean sent;
-        try { sent = socket.send(event.toString()); }
+        try { sent = failedSocket.send(event.toString()); }
         catch (Throwable t) { sent = false; }
         if (!sent) {
+            socket = null;
             turnActive = false;
             ready = false;
+            sentSamples = 0;
+            activeBackup.clear();
             listener.onState("fallback");
+            try { failedSocket.close(1011, "append_failed"); } catch (Throwable ignored) {}
+            scheduleReconnect();
             return false;
         }
         sentSamples += realtime.length;
@@ -159,14 +165,19 @@ final class RealtimeTranscriptionClient {
         try { event.put("type", "input_audio_buffer.commit"); }
         catch (Throwable ignored) { return false; }
 
+        WebSocket failedSocket = socket;
         boolean sent;
-        try { sent = socket.send(event.toString()); }
+        try { sent = failedSocket.send(event.toString()); }
         catch (Throwable t) { sent = false; }
         if (!sent) {
+            socket = null;
             sentSamples = 0;
             ready = false;
+            awaitingCompletion = false;
             activeBackup.clear();
             listener.onState("fallback");
+            try { failedSocket.close(1011, "commit_failed"); } catch (Throwable ignored) {}
+            scheduleReconnect();
             return false;
         }
 
@@ -229,9 +240,13 @@ final class RealtimeTranscriptionClient {
         try { sent = ws.send(update.toString()); }
         catch (Throwable t) { sent = false; }
         if (!sent) {
+            socket = null;
             ready = false;
+            turnActive = false;
+            awaitingCompletion = false;
             listener.onState("fallback");
             try { ws.close(1011, "session_update_failed"); } catch (Throwable ignored) {}
+            scheduleReconnect();
             return;
         }
 
@@ -285,18 +300,25 @@ final class RealtimeTranscriptionClient {
         if ("error".equals(type)) {
             long recoveryTurn = -1L;
             long recoveryGeneration = -1L;
+            WebSocket failedSocket;
             synchronized (this) {
                 if (ws != socket) return;
                 if (awaitingCompletion) {
                     recoveryTurn = committedTurnSerial;
                     recoveryGeneration = generation;
                 }
+                failedSocket = socket;
+                socket = null;
                 ready = false;
                 turnActive = false;
                 awaitingCompletion = false;
             }
             listener.onState("fallback");
+            if (failedSocket != null) {
+                try { failedSocket.close(1011, "server_error"); } catch (Throwable ignored) {}
+            }
             if (recoveryTurn > 0L) recoverCommittedTurn(recoveryTurn, recoveryGeneration, "server_error");
+            scheduleReconnect();
         }
     }
 
@@ -472,7 +494,7 @@ final class RealtimeTranscriptionClient {
     private synchronized void scheduleReconnect() {
         if (!wanted || closed || reconnectScheduled || socket != null) return;
         reconnectScheduled = true;
-        long delay = Math.min(10_000L, 1_000L << Math.min(3, reconnectAttempt++));
+        long delay = RealtimeReconnectPolicy.delayMs(reconnectAttempt++);
         scheduler.schedule(() -> {
             synchronized (RealtimeTranscriptionClient.this) {
                 reconnectScheduled = false;
