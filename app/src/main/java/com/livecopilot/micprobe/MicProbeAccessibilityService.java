@@ -58,6 +58,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private String realtimeState = "off";
     private String aiStatus = "Готов";
     private String pendingSemanticFocus = "";
+    private boolean pendingSemanticConservative;
     private int styleIndex;
     private boolean collapsed;
     private boolean debugVisible;
@@ -93,6 +94,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private long lastStylesLatencyMs = -1L;
     private long lastSemanticLatencyMs = -1L;
     private long lastFileDrainLatencyMs = -1L;
+    private int lastFileCoveragePercent = -1;
+    private int lastFileSubmittedChunks;
+    private int lastFileFailedChunks;
+    private boolean lastFileTailMissing;
+    private long lastFileSttDeadlineMs = -1L;
 
     @Override
     protected void onServiceConnected() {
@@ -194,6 +200,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         activeSemanticEpoch = -1L;
         semanticPrimaryAppliedAtMs = 0L;
         pendingSemanticFocus = "";
+        pendingSemanticConservative = false;
 
         realtimeSpeechEpoch = realtimeTranscriber != null
                 ? realtimeTranscriber.noteNewSpeech()
@@ -311,6 +318,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (!clean.isEmpty() && useful.isEmpty()) {
             lastSelfEchoAtMs = now;
             pendingSemanticFocus = "";
+            pendingSemanticConservative = false;
             aiStatus = "Слушам";
             renderStatus();
             renderDebug();
@@ -367,6 +375,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             semanticTurns.addLast(useful);
             while (semanticTurns.size() > SEMANTIC_CONTEXT_TURNS) semanticTurns.removeFirst();
             pendingSemanticFocus = useful;
+            pendingSemanticConservative = false;
             pendingSemanticAtMs = now;
         }
 
@@ -395,6 +404,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         activeSemanticEpoch = -1L;
         semanticPrimaryAppliedAtMs = 0L;
         pendingSemanticFocus = "";
+        pendingSemanticConservative = false;
 
         long now = System.currentTimeMillis();
         boolean primaryOnly = hasText(replies.direct)
@@ -425,26 +435,39 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     @Override
     public void onFileTurnComplete(
             long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued,
-            long drainLatencyMs) {
+            long drainLatencyMs, int submittedChunks, int failedChunks,
+            boolean lastChunkFailed, long nextDeadlineMs) {
         getMainExecutor().execute(() -> handleFileTurnComplete(
-                sessionSerial, inputSerial, turnFocus, mainReplyQueued, drainLatencyMs));
+                sessionSerial, inputSerial, turnFocus, mainReplyQueued, drainLatencyMs,
+                submittedChunks, failedChunks, lastChunkFailed, nextDeadlineMs));
     }
 
     private synchronized void handleFileTurnComplete(
             long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued,
-            long drainLatencyMs) {
+            long drainLatencyMs, int submittedChunks, int failedChunks,
+            boolean lastChunkFailed, long nextDeadlineMs) {
         if (aiClient == null
                 || !aiClient.isTranscriptCallbackCurrent(sessionSerial, inputSerial)) return;
         if (engine == null || !engine.isRunning()) return;
         lastFileDrainLatencyMs = Math.max(0L, drainLatencyMs);
+        lastFileCoveragePercent = FileTurnCoveragePolicy.coveragePercent(
+                submittedChunks, failedChunks);
+        lastFileSubmittedChunks = Math.max(0, submittedChunks);
+        lastFileFailedChunks = Math.max(0, failedChunks);
+        lastFileTailMissing = lastChunkFailed;
+        lastFileSttDeadlineMs = Math.max(0L, nextDeadlineMs);
         renderDebug();
 
-        if (!FileTurnReplyPolicy.shouldUseSemanticFallback(mainReplyQueued, turnFocus)) {
+        if (!FileTurnCoveragePolicy.allowSemanticFallback(
+                mainReplyQueued, turnFocus, submittedChunks, failedChunks, lastChunkFailed)) {
             pendingSemanticFocus = "";
+            pendingSemanticConservative = false;
             return;
         }
 
         pendingSemanticFocus = turnFocus.trim();
+        pendingSemanticConservative = FileTurnCoveragePolicy.isConservativeSemantic(
+                submittedChunks, failedChunks, lastChunkFailed);
         pendingSemanticAtMs = Math.max(System.currentTimeMillis(), answerUpdatedAtMs + 1L);
         scheduleSemanticFallbackIfNeeded();
     }
@@ -480,16 +503,19 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (pendingSemanticFocus.isEmpty() || semanticFallback == null) return;
         if (answerUpdatedAtMs >= pendingSemanticAtMs) {
             pendingSemanticFocus = "";
+            pendingSemanticConservative = false;
             return;
         }
 
         long now = System.currentTimeMillis();
         if (now - pendingSemanticAtMs > SEMANTIC_FOCUS_MAX_AGE_MS) {
             pendingSemanticFocus = "";
+            pendingSemanticConservative = false;
             return;
         }
 
         String focusSnapshot = pendingSemanticFocus;
+        boolean conservativeSnapshot = pendingSemanticConservative;
         long focusTimeSnapshot = pendingSemanticAtMs;
         long semanticEpochSnapshot = semanticEpoch;
         long minGapMs = SemanticSchedulingPolicy.minGapMs(focusSnapshot);
@@ -498,17 +524,22 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             overlay.postDelayed(() -> {
                 if (SemanticEpochPolicy.shouldRun(semanticEpochSnapshot, semanticEpoch)
                         && focusSnapshot.equals(pendingSemanticFocus)
+                        && conservativeSnapshot == pendingSemanticConservative
                         && focusTimeSnapshot == pendingSemanticAtMs
                         && answerUpdatedAtMs < focusTimeSnapshot) {
-                    requestSemanticFallback(focusSnapshot, focusTimeSnapshot, semanticEpochSnapshot);
+                    requestSemanticFallback(
+                            focusSnapshot, focusTimeSnapshot, semanticEpochSnapshot,
+                            conservativeSnapshot);
                 }
             }, wait);
             return;
         }
-        requestSemanticFallback(focusSnapshot, focusTimeSnapshot, semanticEpochSnapshot);
+        requestSemanticFallback(
+                focusSnapshot, focusTimeSnapshot, semanticEpochSnapshot, conservativeSnapshot);
     }
 
-    private void requestSemanticFallback(String focus, long focusAtMs, long expectedSemanticEpoch) {
+    private void requestSemanticFallback(String focus, long focusAtMs, long expectedSemanticEpoch,
+                                         boolean conservativeInput) {
         if (engine == null || !engine.isRunning() || semanticFallback == null) return;
         if (!SemanticEpochPolicy.shouldRun(expectedSemanticEpoch, semanticEpoch)) return;
         long now = System.currentTimeMillis();
@@ -520,10 +551,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         semanticAnswerBaselineMs = answerUpdatedAtMs;
         semanticPrimaryAppliedAtMs = 0L;
         long requestId = semanticFallback.request(
-                buildSemanticContext(), focus, currentVisibleSuggestion());
+                buildSemanticContext(), focus, currentVisibleSuggestion(), conservativeInput);
         activeSemanticRequestId = requestId;
         activeSemanticEpoch = requestId >= 0L ? expectedSemanticEpoch : -1L;
         pendingSemanticFocus = "";
+        pendingSemanticConservative = false;
     }
 
     private void applySemanticReply(long requestId, OpenAiCopilotClient.Replies replies) {
@@ -730,6 +762,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             activeSemanticEpoch = -1L;
             semanticPrimaryAppliedAtMs = 0L;
             pendingSemanticFocus = "";
+            pendingSemanticConservative = false;
             realtimeTurnActive = false;
             realtimeBackupStreaming = false;
             realtimeSpeechEpoch = -1L;
@@ -761,6 +794,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             lastFileTranscriptAtMs = 0L;
             lastRealtimeTranscriptAtMs = 0L;
             pendingSemanticFocus = "";
+            pendingSemanticConservative = false;
             pendingSemanticAtMs = 0L;
             lastSemanticRequestAtMs = 0L;
             lastSemanticTranscriptAtMs = 0L;
@@ -848,9 +882,15 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 + " • styles " + latencyLabel(lastStylesLatencyMs)
                 + " • sem " + latencyLabel(lastSemanticLatencyMs)
                 + " • file-drain " + latencyLabel(lastFileDrainLatencyMs);
+        String fileConfidence = lastFileCoveragePercent < 0 ? ""
+                : "\nfile cov " + lastFileCoveragePercent + "% ("
+                + Math.max(0, lastFileSubmittedChunks - lastFileFailedChunks) + "/"
+                + lastFileSubmittedChunks + ")"
+                + (lastFileTailMissing ? " • tail-missing" : "")
+                + " • budget " + latencyLabel(lastFileSttDeadlineMs);
         String echo = lastSelfEchoAtMs > 0L
                 && System.currentTimeMillis() - lastSelfEchoAtMs < 5_000L ? " • echo" : "";
-        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency);
+        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency + fileConfidence);
     }
 
     private void resetLatencyMetrics() {
@@ -861,6 +901,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastStylesLatencyMs = -1L;
         lastSemanticLatencyMs = -1L;
         lastFileDrainLatencyMs = -1L;
+        lastFileCoveragePercent = -1;
+        lastFileSubmittedChunks = 0;
+        lastFileFailedChunks = 0;
+        lastFileTailMissing = false;
+        lastFileSttDeadlineMs = -1L;
     }
 
     private static String latencyLabel(long ms) {
