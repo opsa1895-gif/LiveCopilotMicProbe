@@ -177,18 +177,20 @@ final class OpenAiCopilotClient {
             }
 
             long now = System.currentTimeMillis();
-            prepareContextFor(raw, now);
-            String focus = commitTranscript(raw, now);
+            String useful = removeRecentSelfEcho(raw, now);
+            if (useful.isEmpty()) {
+                listener.onStatus("Слушам");
+                return;
+            }
+
+            prepareContextFor(useful, now);
+            String focus = commitTranscript(useful, now);
             if (focus.isEmpty()) {
                 listener.onStatus("Слушам");
                 return;
             }
 
             listener.onTranscript(focus);
-            if (isRecentSelfEcho(focus, now)) {
-                listener.onStatus("Слушам");
-                return;
-            }
             synchronized (this) {
                 if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
             }
@@ -341,11 +343,13 @@ final class OpenAiCopilotClient {
                 && System.currentTimeMillis() - job.createdAtMs <= MAX_REPLY_AGE_MS;
     }
 
-    private synchronized boolean isRecentSelfEcho(String focus, long now) {
+    private synchronized String removeRecentSelfEcho(String transcript, long now) {
+        String value = clean(transcript);
+        if (value.isEmpty()) return "";
         if (lastReplyAtMs <= 0L || now < lastReplyAtMs
-                || now - lastReplyAtMs > SELF_ECHO_WINDOW_MS) return false;
-        return SelfEchoFilter.matchesAny(
-                focus,
+                || now - lastReplyAtMs > SELF_ECHO_WINDOW_MS) return value;
+        return SelfEchoFilter.removeEchoPrefix(
+                value,
                 lastDirectReply,
                 lastSarcasticReply,
                 lastFunnyReply,

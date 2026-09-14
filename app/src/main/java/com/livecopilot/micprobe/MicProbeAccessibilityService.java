@@ -236,8 +236,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             lastSttLatencyMs = now - lastVoiceEndAtMs;
         }
 
-        lastTranscript = clean;
-        if (!clean.isEmpty() && isLikelySelfEcho(clean, now)) {
+        String useful = removeLikelySelfEcho(clean, now);
+        boolean echoAdjusted = !clean.equals(useful);
+        lastTranscript = useful.isEmpty() ? clean : useful;
+        if (!clean.isEmpty() && useful.isEmpty()) {
             lastSelfEchoAtMs = now;
             pendingSemanticFocus = "";
             aiStatus = "Слушам";
@@ -245,7 +247,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             renderDebug();
             return;
         }
-        if (!clean.isEmpty()) {
+        if (echoAdjusted) lastSelfEchoAtMs = now;
+        if (!useful.isEmpty()) {
             if (semanticFallback != null && activeSemanticRequestId >= 0L) {
                 semanticFallback.invalidate();
                 activeSemanticRequestId = -1L;
@@ -253,18 +256,18 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             }
             if ((lastSemanticTranscriptAtMs > 0L
                     && now - lastSemanticTranscriptAtMs >= SEMANTIC_CONTEXT_IDLE_RESET_MS)
-                    || isSemanticTopicShift(clean)) {
+                    || isSemanticTopicShift(useful)) {
                 semanticTurns.clear();
             }
             lastSemanticTranscriptAtMs = now;
-            semanticTurns.addLast(clean);
+            semanticTurns.addLast(useful);
             while (semanticTurns.size() > SEMANTIC_CONTEXT_TURNS) semanticTurns.removeFirst();
-            pendingSemanticFocus = clean;
+            pendingSemanticFocus = useful;
             pendingSemanticAtMs = now;
         }
 
         renderDebug();
-        if (fromRealtime && !clean.isEmpty()) {
+        if (fromRealtime && !useful.isEmpty()) {
             scheduleSemanticFallbackIfNeeded();
         }
     }
@@ -416,12 +419,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         renderDebug();
     }
 
-    private boolean isLikelySelfEcho(String transcript, long now) {
-        if (currentReplies == null || answerUpdatedAtMs <= 0L) return false;
+    private String removeLikelySelfEcho(String transcript, long now) {
+        String value = transcript == null ? "" : transcript.replace('\n', ' ').trim();
+        if (value.isEmpty()) return "";
+        if (currentReplies == null || answerUpdatedAtMs <= 0L) return value;
         long age = now - answerUpdatedAtMs;
-        if (age < 0L || age > SELF_ECHO_WINDOW_MS) return false;
-        return SelfEchoFilter.matchesAny(
-                transcript,
+        if (age < 0L || age > SELF_ECHO_WINDOW_MS) return value;
+        return SelfEchoFilter.removeEchoPrefix(
+                value,
                 currentReplies.direct,
                 currentReplies.sarcastic,
                 currentReplies.funny,
