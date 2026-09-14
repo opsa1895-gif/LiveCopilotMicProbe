@@ -26,7 +26,9 @@ final class OpenAiCopilotClient {
         void onTranscript(long sessionSerial, long inputSerial, String transcript);
         void onReplies(long sessionSerial, long replySerial, Replies replies);
         void onFileTurnComplete(long sessionSerial, long inputSerial, String turnFocus,
-                                boolean mainReplyQueued, long drainLatencyMs);
+                                boolean mainReplyQueued, long drainLatencyMs,
+                                int submittedChunks, int failedChunks, boolean lastChunkFailed,
+                                long nextDeadlineMs);
         void onStatus(long sessionSerial, long workSerial, boolean replyWork, String status);
     }
 
@@ -50,15 +52,24 @@ final class OpenAiCopilotClient {
         final long createdAtMs;
         final long sessionSerial;
         final long inputSerial;
+        final int chunkIndex;
         private volatile HttpURLConnection activeConnection;
         private volatile boolean cancelled;
+        private boolean failureRecorded;
 
-        AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial) {
+        AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial, int chunkIndex) {
             this.samples = samples;
             this.sampleRate = sampleRate;
             this.createdAtMs = System.currentTimeMillis();
             this.sessionSerial = sessionSerial;
             this.inputSerial = inputSerial;
+            this.chunkIndex = chunkIndex;
+        }
+
+        synchronized boolean markFailureOnce() {
+            if (failureRecorded) return false;
+            failureRecorded = true;
+            return true;
         }
 
         synchronized void attachConnection(HttpURLConnection connection) {
@@ -150,6 +161,9 @@ final class OpenAiCopilotClient {
     private String fileTurnFocus = "";
     private long fileSttCommitDeadlineMs = AdaptiveFileSttDeadlinePolicy.initialDeadlineMs();
     private boolean fileTurnHadSttTimeout;
+    private int fileTurnSubmittedChunks;
+    private int fileTurnFailedChunks;
+    private int fileTurnLastFailedChunkIndex;
     private long lastReplyAtMs;
     private long firstSpeechAtMs;
     private long lastTranscriptAtMs;
@@ -175,6 +189,9 @@ final class OpenAiCopilotClient {
         fileTurnFocus = "";
         fileSttCommitDeadlineMs = AdaptiveFileSttDeadlinePolicy.initialDeadlineMs();
         fileTurnHadSttTimeout = false;
+        fileTurnSubmittedChunks = 0;
+        fileTurnFailedChunks = 0;
+        fileTurnLastFailedChunkIndex = 0;
         recentTurns.clear();
         summary = "";
         lastDirectReply = "";
@@ -196,6 +213,9 @@ final class OpenAiCopilotClient {
         fileTurnSerial = latestInputSerial;
         fileTurnFocus = "";
         fileTurnHadSttTimeout = false;
+        fileTurnSubmittedChunks = 0;
+        fileTurnFailedChunks = 0;
+        fileTurnLastFailedChunkIndex = 0;
         audioExecutor.cancelPending();
         audioHttp.cancelAll();
         replyHttp.cancelAll();
@@ -211,6 +231,9 @@ final class OpenAiCopilotClient {
         fileTurnSerial = -1L;
         fileTurnFocus = "";
         fileTurnHadSttTimeout = false;
+        fileTurnSubmittedChunks = 0;
+        fileTurnFailedChunks = 0;
+        fileTurnLastFailedChunkIndex = 0;
         audioExecutor.cancelPending();
         audioHttp.cancelAll();
         replyHttp.cancelAll();
@@ -242,6 +265,9 @@ final class OpenAiCopilotClient {
             fileTurnSerial = -1L;
             fileTurnFocus = "";
             fileTurnHadSttTimeout = false;
+            fileTurnSubmittedChunks = 0;
+            fileTurnFailedChunks = 0;
+            fileTurnLastFailedChunkIndex = 0;
             audioExecutor.cancelPending();
             audioHttp.cancelAll();
             replyHttp.cancelAll();
@@ -287,7 +313,9 @@ final class OpenAiCopilotClient {
         // token. They can enrich transcript/context but never generate a reply here.
         latestReplySerial++;
         replyHttp.cancelAll();
-        AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);
+        int chunkIndex = ++fileTurnSubmittedChunks;
+        AudioItem item = new AudioItem(
+                samples.clone(), sampleRate, sessionSerial, inputSerial, chunkIndex);
         long deadlineMs = fileSttCommitDeadlineMs;
         audioExecutor.submit(
                 () -> transcribeAudioIfFresh(item),
@@ -296,19 +324,23 @@ final class OpenAiCopilotClient {
                         // Drop only the overdue chunk. Later same-turn chunks can
                         // still commit in order and feed the final turn reply.
                         item.cancel();
-                        noteFileSttTimeout(item);
+                        noteFileSttFailure(item, true);
                         listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                         return;
                     }
+                    if (error != null || raw == null) noteFileSttFailure(item, false);
                     processAudioResult(item, raw, error);
                 },
                 deadlineMs);
     }
 
-    private synchronized void noteFileSttTimeout(AudioItem item) {
-        if (item == null || closed) return;
+    private synchronized void noteFileSttFailure(AudioItem item, boolean timedOut) {
+        if (item == null || closed || !item.markFailureOnce()) return;
         if (item.sessionSerial != sessionSerial || item.inputSerial != latestInputSerial) return;
-        fileTurnHadSttTimeout = true;
+        if (item.chunkIndex <= 0 || item.chunkIndex > fileTurnSubmittedChunks) return;
+        fileTurnFailedChunks = Math.min(fileTurnSubmittedChunks, fileTurnFailedChunks + 1);
+        fileTurnLastFailedChunkIndex = Math.max(fileTurnLastFailedChunkIndex, item.chunkIndex);
+        if (timedOut) fileTurnHadSttTimeout = true;
     }
 
     synchronized void finishAudioTurn(long inputSerial) {
@@ -388,7 +420,12 @@ final class OpenAiCopilotClient {
     private void finishAudioTurnIfFresh(TurnEndItem end) {
         String turnFocus;
         long reference;
+        int submittedChunks;
+        int failedChunks;
+        boolean lastChunkFailed;
+        long nextDeadlineMs;
         long now = System.currentTimeMillis();
+        long drainLatencyMs = Math.max(0L, now - end.createdAtMs);
         synchronized (this) {
             // New speech/pause/session reset changes the active serial and leaves this
             // queued marker unable to consume or reply for the newer turn.
@@ -397,27 +434,36 @@ final class OpenAiCopilotClient {
                     || end.sessionSerial != sessionSerial
                     || end.inputSerial != latestInputSerial) return;
 
-            long drainLatencyMs = Math.max(0L, now - end.createdAtMs);
             fileSttCommitDeadlineMs = AdaptiveFileSttDeadlinePolicy.nextDeadlineMs(
                     fileSttCommitDeadlineMs, drainLatencyMs, fileTurnHadSttTimeout);
-            fileTurnHadSttTimeout = false;
+            nextDeadlineMs = fileSttCommitDeadlineMs;
+            submittedChunks = fileTurnSubmittedChunks;
+            failedChunks = fileTurnFailedChunks;
+            lastChunkFailed = submittedChunks > 0
+                    && fileTurnLastFailedChunkIndex == submittedChunks;
 
             turnFocus = fileTurnFocus;
             fileTurnSerial = -1L;
             fileTurnFocus = "";
-            if (turnFocus.isEmpty() || !isTurnEndSurfaceableLocked(end, now)) return;
+            fileTurnHadSttTimeout = false;
+            fileTurnSubmittedChunks = 0;
+            fileTurnFailedChunks = 0;
+            fileTurnLastFailedChunkIndex = 0;
+            if (!isTurnEndSurfaceableLocked(end, now)) return;
             reference = lastReplyAtMs > 0L ? lastReplyAtMs : firstSpeechAtMs;
         }
 
         boolean actionable = isActionable(turnFocus);
         boolean engagement = !actionable && reference > 0L && now - reference >= ENGAGEMENT_GAP_MS;
-        boolean mainReplyQueued = (actionable || engagement)
+        boolean mainReplyAllowed = FileTurnCoveragePolicy.allowMainReply(
+                turnFocus, submittedChunks, failedChunks, lastChunkFailed);
+        boolean mainReplyQueued = mainReplyAllowed && (actionable || engagement)
                 && queueReplyIfFresh(end, turnFocus, engagement);
-        // File semantic fallback is also gated by the complete speech turn. The
-        // service re-validates this callback on the main thread before scheduling it.
-        long drainLatencyMs = Math.max(0L, now - end.createdAtMs);
+        // The service uses coverage to decide whether a partial turn is safe enough
+        // for conservative semantic fallback, and re-validates freshness on main.
         listener.onFileTurnComplete(
-                end.sessionSerial, end.inputSerial, turnFocus, mainReplyQueued, drainLatencyMs);
+                end.sessionSerial, end.inputSerial, turnFocus, mainReplyQueued, drainLatencyMs,
+                submittedChunks, failedChunks, lastChunkFailed, nextDeadlineMs);
         if (!mainReplyQueued) {
             listener.onStatus(end.sessionSerial, end.inputSerial, false, "Слушам");
         }
