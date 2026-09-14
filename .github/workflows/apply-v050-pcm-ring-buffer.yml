@@ -1,0 +1,30 @@
+name: Apply v0.50 PCM ring buffer
+
+on:
+  push:
+    branches:
+      - copilot-v0-50-pcm-ring-buffer
+    paths:
+      - .github/scripts/apply_v050_service.py
+      - .github/workflows/apply-v050-pcm-ring-buffer.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: copilot-v0-50-pcm-ring-buffer
+      - name: Apply service patch
+        run: python .github/scripts/apply_v050_service.py
+      - name: Commit service changes
+        run: |
+          git config user.name "opsa1895-gif"
+          git config user.email "opsa1895@gmail.com"
+          git add app/src/main/java/com/livecopilot/micprobe/MicProbeAccessibilityService.java
+          git diff --cached --quiet && exit 1
+          git commit -m "perf: use ring buffer for fallback PCM"
+          git push origin HEAD:copilot-v0-50-pcm-ring-buffer
