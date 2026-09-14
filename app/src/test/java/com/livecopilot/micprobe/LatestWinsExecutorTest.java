@@ -44,4 +44,37 @@ public class LatestWinsExecutorTest {
             executor.shutdownNow();
         }
     }
+
+
+    @Test
+    public void singleWorkerAlsoKeepsOnlyNewestPendingTask() throws Exception {
+        LatestWinsExecutor executor = new LatestWinsExecutor(1);
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch newestRan = new CountDownLatch(1);
+        AtomicBoolean oldQueuedRan = new AtomicBoolean(false);
+
+        try {
+            executor.execute(() -> {
+                firstStarted.countDown();
+                try {
+                    releaseFirst.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(firstStarted.await(2, TimeUnit.SECONDS));
+
+            executor.execute(() -> oldQueuedRan.set(true));
+            executor.execute(newestRan::countDown);
+
+            releaseFirst.countDown();
+            assertTrue(newestRan.await(2, TimeUnit.SECONDS));
+            Thread.sleep(80L);
+            assertFalse(oldQueuedRan.get());
+        } finally {
+            releaseFirst.countDown();
+            executor.shutdownNow();
+        }
+    }
 }
