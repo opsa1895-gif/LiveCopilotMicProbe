@@ -20,15 +20,20 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
+
           p = Path('app/src/main/java/com/livecopilot/micprobe/RealtimeTranscriptionClient.java')
           s = p.read_text()
-          old = '''        if (!ready || socket == null || sentSamples < MIN_COMMIT_SAMPLES) {
-              sentSamples = 0;
-              activeBackup.clear();
-              sendClearLocked();
-              return false;
-          }'''
-          new = '''        if (!ready || socket == null || sentSamples < MIN_COMMIT_SAMPLES) {
+
+          pattern = re.compile(
+              r'        if \(!ready \|\| socket == null \|\| sentSamples < MIN_COMMIT_SAMPLES\) \{\n'
+              r'\s+sentSamples = 0;\n'
+              r'\s+activeBackup\.clear\(\);\n'
+              r'\s+sendClearLocked\(\);\n'
+              r'\s+return false;\n'
+              r'\s+\}'
+          )
+          replacement = '''        if (!ready || socket == null || sentSamples < MIN_COMMIT_SAMPLES) {
               WebSocket failedSocket = null;
               boolean clearFailed = ready && socket != null && !sendClearLocked();
               sentSamples = 0;
@@ -46,18 +51,21 @@ jobs:
               }
               return false;
           }'''
-          if s.count(old) != 1:
-              raise SystemExit('commit guard mismatch')
-          s = s.replace(old, new, 1)
-          old = '''    private synchronized void sendClearLocked() {
-              if (socket == null) return;
-              try {
-                  JSONObject event = new JSONObject();
-                  event.put("type", "input_audio_buffer.clear");
-                  socket.send(event.toString());
-              } catch (Throwable ignored) {}
-          }'''
-          new = '''    private boolean sendClearLocked() {
+          s, n = pattern.subn(replacement, s, count=1)
+          if n != 1:
+              raise SystemExit(f'commit guard mismatch: {n}')
+
+          pattern = re.compile(
+              r'    private synchronized void sendClearLocked\(\) \{\n'
+              r'\s+if \(socket == null\) return;\n'
+              r'\s+try \{\n'
+              r'\s+JSONObject event = new JSONObject\(\);\n'
+              r'\s+event\.put\("type", "input_audio_buffer\.clear"\);\n'
+              r'\s+socket\.send\(event\.toString\(\)\);\n'
+              r'\s+\} catch \(Throwable ignored\) \{\}\n'
+              r'\s+\}'
+          )
+          replacement = '''    private boolean sendClearLocked() {
               if (socket == null) return false;
               try {
                   JSONObject event = new JSONObject();
@@ -67,9 +75,11 @@ jobs:
                   return false;
               }
           }'''
-          if s.count(old) != 1:
-              raise SystemExit('clear helper mismatch')
-          p.write_text(s.replace(old, new, 1))
+          s, n = pattern.subn(replacement, s, count=1)
+          if n != 1:
+              raise SystemExit(f'clear helper mismatch: {n}')
+          p.write_text(s)
+
           g = Path('app/build.gradle.kts')
           t = g.read_text()
           if t.count('versionCode = 49') != 1 or t.count('versionName = "0.48.0-contiguous-fallback-audio"') != 1:
