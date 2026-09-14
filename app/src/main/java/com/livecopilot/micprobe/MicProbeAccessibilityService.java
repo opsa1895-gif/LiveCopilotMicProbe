@@ -228,19 +228,21 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         realtimeBackupStreaming = false;
         if (!hadRealtimeBackup) {
             realtimeSpeechEpoch = -1L;
+            finishFileTurn();
             return;
         }
 
         if (!committed) {
             realtimeSpeechEpoch = -1L;
             submitBufferedFallback();
+            finishFileTurn();
         } else {
             clearFallbackTurnAudio();
         }
     }
 
     @Override
-    public void onPcmChunk(short[] samples, int sampleRate, boolean finalChunk) {
+    public void onPcmChunk(short[] samples, int sampleRate) {
         if (aiClient == null || engine == null || !engine.isRunning()) return;
 
         // A Realtime-started turn is already backed up continuously by
@@ -249,7 +251,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         short[] candidate = takeFallbackPlus(samples, sampleRate);
         short[] prepared = AudioPreprocessor.prepare(candidate, sampleRate);
-        if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate, fileSpeechEpoch, finalChunk);
+        if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate, fileSpeechEpoch);
+    }
+
+    private void finishFileTurn() {
+        if (aiClient == null || engine == null || !engine.isRunning()) return;
+        aiClient.finishAudioTurn(fileSpeechEpoch);
     }
 
     @Override
@@ -876,7 +883,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         int rate = fallbackTurnSampleRate;
         fallbackTurnAudio = null;
         short[] prepared = AudioPreprocessor.prepare(audio, rate);
-        if (prepared.length > 0) aiClient.submitAudio(prepared, rate, fileSpeechEpoch, true);
+        if (prepared.length > 0) aiClient.submitAudio(prepared, rate, fileSpeechEpoch);
     }
 
     private synchronized void clearFallbackTurnAudio() {

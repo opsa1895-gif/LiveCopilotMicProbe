@@ -8,15 +8,10 @@ import static org.junit.Assert.assertEquals;
 
 public class FileTurnReplyPolicyTest {
     @Test
-    public void forcedChunkCannotFinalizeSpeechTurn() {
-        assertFalse(FileTurnReplyPolicy.isFinalForTurn(false, 8L, 8L));
-    }
-
-    @Test
-    public void onlyFinalChunkFromCurrentTurnCanFinalize() {
-        assertTrue(FileTurnReplyPolicy.isFinalForTurn(true, 9L, 9L));
-        assertFalse(FileTurnReplyPolicy.isFinalForTurn(true, 8L, 9L));
-        assertFalse(FileTurnReplyPolicy.isFinalForTurn(true, -1L, -1L));
+    public void turnEndMarkerFinalizesOnlyMatchingCurrentTurn() {
+        assertTrue(FileTurnReplyPolicy.canFinalize(9L, 9L));
+        assertFalse(FileTurnReplyPolicy.canFinalize(8L, 9L));
+        assertFalse(FileTurnReplyPolicy.canFinalize(-1L, -1L));
     }
 
     @Test

@@ -48,15 +48,25 @@ final class OpenAiCopilotClient {
         final long createdAtMs;
         final long sessionSerial;
         final long inputSerial;
-        final boolean finalChunk;
 
-        AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial, boolean finalChunk) {
+        AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial) {
             this.samples = samples;
             this.sampleRate = sampleRate;
             this.createdAtMs = System.currentTimeMillis();
             this.sessionSerial = sessionSerial;
             this.inputSerial = inputSerial;
-            this.finalChunk = finalChunk;
+        }
+    }
+
+    private static final class TurnEndItem {
+        final long sessionSerial;
+        final long inputSerial;
+        final long createdAtMs;
+
+        TurnEndItem(long sessionSerial, long inputSerial) {
+            this.sessionSerial = sessionSerial;
+            this.inputSerial = inputSerial;
+            this.createdAtMs = System.currentTimeMillis();
         }
     }
 
@@ -228,16 +238,24 @@ final class OpenAiCopilotClient {
         lastReplyAtMs = Math.max(lastReplyAtMs, effectiveAt);
     }
 
-    synchronized void submitAudio(short[] samples, int sampleRate, long inputSerial, boolean finalChunk) {
+    synchronized void submitAudio(short[] samples, int sampleRate, long inputSerial) {
         if (closed || samples == null || samples.length == 0) return;
         if (inputSerial <= 0L || inputSerial != latestInputSerial) return;
-        // Chunks from one long utterance stay FIFO and share the same turn token.
-        // Forced chunks can enrich transcript/context, but only finalChunk may create
-        // a reply for the completed utterance.
+        // Forced chunks from one long utterance stay FIFO and share the same turn
+        // token. They can enrich transcript/context but never generate a reply here.
         latestReplySerial++;
         replyHttp.cancelAll();
-        AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial, finalChunk);
+        AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);
         audioExecutor.execute(() -> processAudioIfFresh(item));
+    }
+
+    synchronized void finishAudioTurn(long inputSerial) {
+        if (closed || inputSerial <= 0L || inputSerial != latestInputSerial) return;
+        // This marker is queued behind every already-submitted STT chunk. It therefore
+        // finalizes the complete speech turn even when the final audio tail was too
+        // short/quiet for MicProbeEngine.emitSegment().
+        TurnEndItem end = new TurnEndItem(sessionSerial, inputSerial);
+        audioExecutor.execute(() -> finishAudioTurnIfFresh(end));
     }
 
     private void processAudioIfFresh(AudioItem item) {
@@ -258,23 +276,19 @@ final class OpenAiCopilotClient {
             listener.onStatus(item.sessionSerial, item.inputSerial, false, "Разпознавам…");
             String raw = transcribe(key, item);
             if (!isCurrentSession(item.sessionSerial)) return;
-            long now = System.currentTimeMillis();
             if (TranscriptQualityPolicy.isLowQuality(raw)) {
-                if (!finishFileTurnReplyIfNeeded(item, now)) {
-                    listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
-                }
+                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                 return;
             }
 
+            long now = System.currentTimeMillis();
             String focus;
-            String turnFocus;
             synchronized (this) {
-                // File STT may finish after newer speech has already started. Check
-                // freshness while holding the same monitor used for conversation
-                // mutations so stale audio cannot alter context or pending turn focus.
+                // File STT may finish after newer speech has already started. Keep
+                // context and the pending whole-turn focus behind the same freshness
+                // gate and monitor.
                 if (!isProcessableAudioResultLocked(item)) {
                     focus = "";
-                    turnFocus = "";
                 } else {
                     String useful = removeRecentSelfEcho(raw, now);
                     if (useful.isEmpty()) {
@@ -293,70 +307,61 @@ final class OpenAiCopilotClient {
                             if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
                         }
                     }
-                    turnFocus = consumeFileTurnFocusIfFinalLocked(item);
                 }
             }
-
-            boolean surface = shouldSurfaceAudioResult(item);
-            if (!focus.isEmpty() && surface) {
-                listener.onTranscript(item.sessionSerial, item.inputSerial, focus);
-            }
-
-            // Forced chunks are useful for live transcript/context only. Waiting for
-            // finalChunk prevents a reply from landing while the speaker is still
-            // continuing the same long utterance.
-            if (!item.finalChunk) {
+            if (focus.isEmpty()) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                 return;
             }
-            if (!surface || turnFocus.isEmpty()
-                    || !queueTurnReplyIfNeeded(item, turnFocus, now)) {
+
+            if (!shouldSurfaceAudioResult(item)) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
+                return;
             }
+
+            listener.onTranscript(item.sessionSerial, item.inputSerial, focus);
+            listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
         } catch (Throwable ignored) {
-            long now = System.currentTimeMillis();
-            // If only the final STT chunk failed, earlier successfully transcribed
-            // chunks from this same current turn can still drive a useful final reply.
-            if (item.finalChunk && shouldSurfaceAudioResult(item)
-                    && finishFileTurnReplyIfNeeded(item, now)) return;
-            // Cancellation caused by newer speech is expected and must not surface
-            // as a connection error for the obsolete audio item.
+            // A failed chunk does not destroy focus already accumulated from earlier
+            // chunks; the queued turn-end marker may still produce a useful reply.
             if (shouldSurfaceAudioResult(item)) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "AI връзката прекъсна");
             }
         }
     }
 
-    private boolean finishFileTurnReplyIfNeeded(AudioItem item, long now) {
+    private void finishAudioTurnIfFresh(TurnEndItem end) {
         String turnFocus;
-        synchronized (this) {
-            turnFocus = consumeFileTurnFocusIfFinalLocked(item);
-        }
-        return !turnFocus.isEmpty()
-                && shouldSurfaceAudioResult(item)
-                && queueTurnReplyIfNeeded(item, turnFocus, now);
-    }
-
-    private boolean queueTurnReplyIfNeeded(AudioItem item, String turnFocus, long now) {
-        if (turnFocus == null || turnFocus.trim().isEmpty() || !shouldSurfaceAudioResult(item)) {
-            return false;
-        }
-        boolean actionable = isActionable(turnFocus);
         long reference;
+        long now = System.currentTimeMillis();
         synchronized (this) {
+            // New speech/pause/session reset changes the active serial and leaves this
+            // queued marker unable to consume or reply for the newer turn.
+            if (!FileTurnReplyPolicy.canFinalize(end.inputSerial, fileTurnSerial)
+                    || closed
+                    || end.sessionSerial != sessionSerial
+                    || end.inputSerial != latestInputSerial) return;
+
+            turnFocus = fileTurnFocus;
+            fileTurnSerial = -1L;
+            fileTurnFocus = "";
+            if (turnFocus.isEmpty() || !isTurnEndSurfaceableLocked(end, now)) return;
             reference = lastReplyAtMs > 0L ? lastReplyAtMs : firstSpeechAtMs;
         }
+
+        boolean actionable = isActionable(turnFocus);
         boolean engagement = !actionable && reference > 0L && now - reference >= ENGAGEMENT_GAP_MS;
-        return (actionable || engagement) && queueReplyIfFresh(item, turnFocus, engagement);
+        if (!(actionable || engagement)
+                || !queueReplyIfFresh(end, turnFocus, engagement)) {
+            listener.onStatus(end.sessionSerial, end.inputSerial, false, "Слушам");
+        }
     }
 
-    private String consumeFileTurnFocusIfFinalLocked(AudioItem item) {
-        if (!FileTurnReplyPolicy.isFinalForTurn(
-                item.finalChunk, item.inputSerial, fileTurnSerial)) return "";
-        String focus = fileTurnFocus;
-        fileTurnSerial = -1L;
-        fileTurnFocus = "";
-        return focus;
+    private boolean isTurnEndSurfaceableLocked(TurnEndItem end, long now) {
+        long ageMs = Math.max(0L, now - end.createdAtMs);
+        boolean sessionMatches = !closed && end.sessionSerial == sessionSerial;
+        return FileSttFreshnessPolicy.shouldSurface(
+                end.inputSerial, latestInputSerial, ageMs, sessionMatches);
     }
 
     private synchronized void prepareContextFor(String raw, long now) {
@@ -405,13 +410,11 @@ final class OpenAiCopilotClient {
         return clean;
     }
 
-    private boolean queueReplyIfFresh(AudioItem item, String focus, boolean engagement) {
+    private boolean queueReplyIfFresh(TurnEndItem end, String focus, boolean engagement) {
         ReplyJob job;
         synchronized (this) {
-            // Re-check freshness atomically with reply-job creation. Without this, a
-            // newer input can arrive after the earlier surface check and an old file
-            // transcript can issue a fresh reply serial over the newer conversation.
-            if (!isSurfaceableAudioResultLocked(item)) return false;
+            // Re-check end-marker freshness atomically with reply-job creation.
+            if (!isTurnEndSurfaceableLocked(end, System.currentTimeMillis())) return false;
             long serial = ++latestReplySerial;
             replyHttp.cancelAll();
             job = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);

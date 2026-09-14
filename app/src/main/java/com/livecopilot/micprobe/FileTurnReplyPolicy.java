@@ -6,8 +6,8 @@ final class FileTurnReplyPolicy {
 
     private FileTurnReplyPolicy() {}
 
-    static boolean isFinalForTurn(boolean finalChunk, long itemSerial, long activeTurnSerial) {
-        return finalChunk && itemSerial > 0L && itemSerial == activeTurnSerial;
+    static boolean canFinalize(long endSerial, long activeTurnSerial) {
+        return endSerial > 0L && endSerial == activeTurnSerial;
     }
 
     static String appendFocus(String current, String novel, boolean topicShift) {
