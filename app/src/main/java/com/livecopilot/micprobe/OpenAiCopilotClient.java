@@ -388,6 +388,7 @@ final class OpenAiCopilotClient {
                     && sameishReply(primary, job.previousSuggestion);
 
             synchronized (this) {
+                if (!currentLocked(job)) return;
                 lastDirectReply = primary;
                 lastSarcasticReply = "";
                 lastFunnyReply = "";
@@ -404,6 +405,7 @@ final class OpenAiCopilotClient {
             ReplyGenerator.Replies local = ReplyGenerator.generate(job.context, job.focus);
             String direct = primary.isEmpty() ? local.direct : primary;
             synchronized (this) {
+                if (!currentLocked(job)) return;
                 lastDirectReply = direct;
                 lastSarcasticReply = local.sarcastic;
                 lastFunnyReply = local.funny;
@@ -429,6 +431,7 @@ final class OpenAiCopilotClient {
                     job);
             if (!current(job)) return;
             synchronized (this) {
+                if (!currentLocked(job)) return;
                 if (!complete.direct.isEmpty()) lastDirectReply = complete.direct;
                 lastSarcasticReply = complete.sarcastic;
                 lastFunnyReply = complete.funny;
@@ -439,6 +442,7 @@ final class OpenAiCopilotClient {
             if (!current(job)) return;
             ReplyGenerator.Replies local = ReplyGenerator.generate(job.context, job.focus);
             synchronized (this) {
+                if (!currentLocked(job)) return;
                 lastSarcasticReply = local.sarcastic;
                 lastFunnyReply = local.funny;
                 lastCalmReply = local.calm;
@@ -448,10 +452,16 @@ final class OpenAiCopilotClient {
     }
 
     private synchronized boolean current(ReplyJob job) {
-        return !closed
-                && job.sessionSerial == sessionSerial
-                && job.serial == latestReplySerial
-                && System.currentTimeMillis() - job.createdAtMs <= MAX_REPLY_AGE_MS;
+        return currentLocked(job);
+    }
+
+    // Must be called while holding this monitor. Keeping the freshness check in the
+    // same critical section as state writes closes the final check-then-write race.
+    private boolean currentLocked(ReplyJob job) {
+        long ageMs = Math.max(0L, System.currentTimeMillis() - job.createdAtMs);
+        return ReplyStateFreshnessPolicy.shouldApply(
+                job.sessionSerial, sessionSerial, job.serial, latestReplySerial,
+                ageMs, MAX_REPLY_AGE_MS, closed);
     }
 
     private synchronized String removeRecentSelfEcho(String transcript, long now) {
@@ -614,7 +624,9 @@ final class OpenAiCopilotClient {
 
         String nextSummary = clean(json.optString("summary", ""));
         if (!nextSummary.isEmpty()) {
-            synchronized (this) { summary = shorten(nextSummary, 420); }
+            synchronized (this) {
+                if (currentLocked(job)) summary = shorten(nextSummary, 420);
+            }
         }
 
         String finalDirect = direct;
