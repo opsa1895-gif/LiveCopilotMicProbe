@@ -372,7 +372,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastSemanticRequestAtMs = now;
         semanticAnswerBaselineMs = answerUpdatedAtMs;
         semanticPrimaryAppliedAtMs = 0L;
-        activeSemanticRequestId = semanticFallback.request(buildSemanticContext(), focus);
+        activeSemanticRequestId = semanticFallback.request(
+                buildSemanticContext(), focus, currentVisibleSuggestion());
         pendingSemanticFocus = "";
     }
 
@@ -434,6 +435,13 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 currentReplies.sarcastic,
                 currentReplies.funny,
                 currentReplies.calm);
+    }
+
+    private String currentVisibleSuggestion() {
+        if (currentReplies == null) return "";
+        String value = selectedReply(currentReplies, styleIndex);
+        if (!hasText(value)) value = currentReplies.direct;
+        return value == null ? "" : value.trim();
     }
 
     private String buildSemanticContext() {
