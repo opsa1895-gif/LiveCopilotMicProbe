@@ -92,6 +92,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private long lastFirstReplyLatencyMs = -1L;
     private long lastStylesLatencyMs = -1L;
     private long lastSemanticLatencyMs = -1L;
+    private long lastFileDrainLatencyMs = -1L;
 
     @Override
     protected void onServiceConnected() {
@@ -423,16 +424,20 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onFileTurnComplete(
-            long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued) {
+            long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued,
+            long drainLatencyMs) {
         getMainExecutor().execute(() -> handleFileTurnComplete(
-                sessionSerial, inputSerial, turnFocus, mainReplyQueued));
+                sessionSerial, inputSerial, turnFocus, mainReplyQueued, drainLatencyMs));
     }
 
     private synchronized void handleFileTurnComplete(
-            long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued) {
+            long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued,
+            long drainLatencyMs) {
         if (aiClient == null
                 || !aiClient.isTranscriptCallbackCurrent(sessionSerial, inputSerial)) return;
         if (engine == null || !engine.isRunning()) return;
+        lastFileDrainLatencyMs = Math.max(0L, drainLatencyMs);
+        renderDebug();
 
         if (!FileTurnReplyPolicy.shouldUseSemanticFallback(mainReplyQueued, turnFocus)) {
             pendingSemanticFocus = "";
@@ -841,7 +846,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         String latency = "\n~end→text " + latencyLabel(lastSttLatencyMs)
                 + " • text→1st " + latencyLabel(lastFirstReplyLatencyMs)
                 + " • styles " + latencyLabel(lastStylesLatencyMs)
-                + " • sem " + latencyLabel(lastSemanticLatencyMs);
+                + " • sem " + latencyLabel(lastSemanticLatencyMs)
+                + " • file-drain " + latencyLabel(lastFileDrainLatencyMs);
         String echo = lastSelfEchoAtMs > 0L
                 && System.currentTimeMillis() - lastSelfEchoAtMs < 5_000L ? " • echo" : "";
         debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency);
@@ -854,6 +860,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFirstReplyLatencyMs = -1L;
         lastStylesLatencyMs = -1L;
         lastSemanticLatencyMs = -1L;
+        lastFileDrainLatencyMs = -1L;
     }
 
     private static String latencyLabel(long ms) {

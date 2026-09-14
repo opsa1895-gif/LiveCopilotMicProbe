@@ -25,7 +25,8 @@ final class OpenAiCopilotClient {
     interface Listener {
         void onTranscript(long sessionSerial, long inputSerial, String transcript);
         void onReplies(long sessionSerial, long replySerial, Replies replies);
-        void onFileTurnComplete(long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued);
+        void onFileTurnComplete(long sessionSerial, long inputSerial, String turnFocus,
+                                boolean mainReplyQueued, long drainLatencyMs);
         void onStatus(long sessionSerial, long workSerial, boolean replyWork, String status);
     }
 
@@ -105,7 +106,8 @@ final class OpenAiCopilotClient {
 
     private final Context context;
     private final Listener listener;
-    private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
+    private final OrderedParallelExecutor<String> audioExecutor =
+            new OrderedParallelExecutor<>(2);
     private final LatestWinsExecutor replyExecutor = new LatestWinsExecutor(2);
     private final ExecutorService variantExecutor = Executors.newSingleThreadExecutor();
     private final HttpConnectionRegistry replyHttp = new HttpConnectionRegistry();
@@ -134,6 +136,7 @@ final class OpenAiCopilotClient {
 
     synchronized void resetSession() {
         sessionSerial++;
+        audioExecutor.cancelPending();
         audioHttp.cancelAll();
         replyHttp.cancelAll();
         latestInputSerial = 0L;
@@ -160,6 +163,7 @@ final class OpenAiCopilotClient {
         latestReplySerial++;
         fileTurnSerial = latestInputSerial;
         fileTurnFocus = "";
+        audioExecutor.cancelPending();
         audioHttp.cancelAll();
         replyHttp.cancelAll();
         return latestInputSerial;
@@ -173,6 +177,7 @@ final class OpenAiCopilotClient {
         latestReplySerial++;
         fileTurnSerial = -1L;
         fileTurnFocus = "";
+        audioExecutor.cancelPending();
         audioHttp.cancelAll();
         replyHttp.cancelAll();
     }
@@ -202,6 +207,7 @@ final class OpenAiCopilotClient {
             latestReplySerial++;
             fileTurnSerial = -1L;
             fileTurnFocus = "";
+            audioExecutor.cancelPending();
             audioHttp.cancelAll();
             replyHttp.cancelAll();
             if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
@@ -247,7 +253,9 @@ final class OpenAiCopilotClient {
         latestReplySerial++;
         replyHttp.cancelAll();
         AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);
-        audioExecutor.execute(() -> processAudioIfFresh(item));
+        audioExecutor.submit(
+                () -> transcribeAudioIfFresh(item),
+                (raw, error) -> processAudioResult(item, raw, error));
     }
 
     synchronized void finishAudioTurn(long inputSerial) {
@@ -256,79 +264,72 @@ final class OpenAiCopilotClient {
         // finalizes the complete speech turn even when the final audio tail was too
         // short/quiet for MicProbeEngine.emitSegment().
         TurnEndItem end = new TurnEndItem(sessionSerial, inputSerial);
-        audioExecutor.execute(() -> finishAudioTurnIfFresh(end));
+        audioExecutor.afterSubmitted(() -> finishAudioTurnIfFresh(end));
     }
 
-    private void processAudioIfFresh(AudioItem item) {
-        // Old turns are rejected before API-key loading/status/network work, while
-        // multiple chunks from the current long turn remain processable in FIFO order.
-        if (item == null || !shouldProcessAudioResult(item)) return;
-        processAudio(item);
-    }
-
-    private void processAudio(AudioItem item) {
+    private String transcribeAudioIfFresh(AudioItem item) throws Exception {
+        if (item == null || !shouldProcessAudioResult(item)) return null;
         String key = SecretStore.loadApiKey(context);
         if (key.isEmpty()) {
             listener.onStatus(item.sessionSerial, item.inputSerial, false, "Няма API key");
-            return;
+            return null;
         }
+        listener.onStatus(item.sessionSerial, item.inputSerial, false, "Разпознавам…");
+        return transcribe(key, item);
+    }
 
-        try {
-            listener.onStatus(item.sessionSerial, item.inputSerial, false, "Разпознавам…");
-            String raw = transcribe(key, item);
-            if (!isCurrentSession(item.sessionSerial)) return;
-            if (TranscriptQualityPolicy.isLowQuality(raw)) {
-                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
-                return;
-            }
-
-            long now = System.currentTimeMillis();
-            String focus;
-            synchronized (this) {
-                // File STT may finish after newer speech has already started. Keep
-                // context and the pending whole-turn focus behind the same freshness
-                // gate and monitor.
-                if (!isProcessableAudioResultLocked(item)) {
-                    focus = "";
-                } else {
-                    String useful = removeRecentSelfEcho(raw, now);
-                    if (useful.isEmpty()) {
-                        focus = "";
-                    } else {
-                        boolean topicShift = isStrongTopicShift(useful);
-                        prepareContextFor(useful, now);
-                        focus = commitTranscript(useful, now);
-                        if (!focus.isEmpty()) {
-                            if (fileTurnSerial != item.inputSerial) {
-                                fileTurnSerial = item.inputSerial;
-                                fileTurnFocus = "";
-                            }
-                            fileTurnFocus = FileTurnReplyPolicy.appendFocus(
-                                    fileTurnFocus, focus, topicShift);
-                            if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
-                        }
-                    }
-                }
-            }
-            if (focus.isEmpty()) {
-                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
-                return;
-            }
-
-            if (!shouldSurfaceAudioResult(item)) {
-                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
-                return;
-            }
-
-            listener.onTranscript(item.sessionSerial, item.inputSerial, focus);
-            listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
-        } catch (Throwable ignored) {
-            // A failed chunk does not destroy focus already accumulated from earlier
-            // chunks; the queued turn-end marker may still produce a useful reply.
+    private void processAudioResult(AudioItem item, String raw, Throwable error) {
+        if (item == null || !shouldProcessAudioResult(item)) return;
+        if (error != null) {
+            // Newer speech/pause cancellation is expected and fails freshness above.
             if (shouldSurfaceAudioResult(item)) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "AI връзката прекъсна");
             }
+            return;
         }
+        if (raw == null) return;
+        if (TranscriptQualityPolicy.isLowQuality(raw)) {
+            listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        String focus;
+        synchronized (this) {
+            // Network STT may finish out of order. OrderedParallelExecutor serializes
+            // these commits in submission order before conversation state is mutated.
+            if (!isProcessableAudioResultLocked(item)) {
+                focus = "";
+            } else {
+                String useful = removeRecentSelfEcho(raw, now);
+                if (useful.isEmpty()) {
+                    focus = "";
+                } else {
+                    boolean topicShift = isStrongTopicShift(useful);
+                    prepareContextFor(useful, now);
+                    focus = commitTranscript(useful, now);
+                    if (!focus.isEmpty()) {
+                        if (fileTurnSerial != item.inputSerial) {
+                            fileTurnSerial = item.inputSerial;
+                            fileTurnFocus = "";
+                        }
+                        fileTurnFocus = FileTurnReplyPolicy.appendFocus(
+                                fileTurnFocus, focus, topicShift);
+                        if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
+                    }
+                }
+            }
+        }
+        if (focus.isEmpty()) {
+            listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
+            return;
+        }
+        if (!shouldSurfaceAudioResult(item)) {
+            listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
+            return;
+        }
+        listener.onTranscript(item.sessionSerial, item.inputSerial, focus);
+        listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
     }
 
     private void finishAudioTurnIfFresh(TurnEndItem end) {
@@ -356,8 +357,9 @@ final class OpenAiCopilotClient {
                 && queueReplyIfFresh(end, turnFocus, engagement);
         // File semantic fallback is also gated by the complete speech turn. The
         // service re-validates this callback on the main thread before scheduling it.
+        long drainLatencyMs = Math.max(0L, now - end.createdAtMs);
         listener.onFileTurnComplete(
-                end.sessionSerial, end.inputSerial, turnFocus, mainReplyQueued);
+                end.sessionSerial, end.inputSerial, turnFocus, mainReplyQueued, drainLatencyMs);
         if (!mainReplyQueued) {
             listener.onStatus(end.sessionSerial, end.inputSerial, false, "Слушам");
         }
