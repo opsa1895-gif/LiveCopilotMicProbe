@@ -18,8 +18,13 @@ rep('''        fileTurnSerial = -1L;\n        fileTurnFocus = "";\n        recen
 
 rep('''        fileTurnSerial = latestInputSerial;\n        fileTurnFocus = "";\n        audioExecutor.cancelPending();\n''', '''        fileTurnSerial = latestInputSerial;\n        fileTurnFocus = "";\n        fileTurnHadSttTimeout = false;\n        audioExecutor.cancelPending();\n''')
 
-# invalidatePendingWork and rememberAcceptedTranscript each clear the current file turn.
-rep('''        fileTurnSerial = -1L;\n        fileTurnFocus = "";\n        audioExecutor.cancelPending();\n''', '''        fileTurnSerial = -1L;\n        fileTurnFocus = "";\n        fileTurnHadSttTimeout = false;\n        audioExecutor.cancelPending();\n''', 2)
+# Pause/invalidation preserves the learned deadline, but clears feedback from the
+# interrupted turn so it cannot bias the next completed turn.
+rep('''        latestInputSerial++;\n        latestReplySerial++;\n        fileTurnSerial = -1L;\n        fileTurnFocus = "";\n        audioExecutor.cancelPending();\n''', '''        latestInputSerial++;\n        latestReplySerial++;\n        fileTurnSerial = -1L;\n        fileTurnFocus = "";\n        fileTurnHadSttTimeout = false;\n        audioExecutor.cancelPending();\n''')
+
+# A Realtime transcript also invalidates the file turn while preserving the learned
+# network profile for the next file-fallback turn.
+rep('''            latestInputSerial++;\n            latestReplySerial++;\n            fileTurnSerial = -1L;\n            fileTurnFocus = "";\n            audioExecutor.cancelPending();\n''', '''            latestInputSerial++;\n            latestReplySerial++;\n            fileTurnSerial = -1L;\n            fileTurnFocus = "";\n            fileTurnHadSttTimeout = false;\n            audioExecutor.cancelPending();\n''')
 
 rep('''        AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);\n        audioExecutor.submit(\n''', '''        AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);\n        long deadlineMs = fileSttCommitDeadlineMs;\n        audioExecutor.submit(\n''')
 
@@ -29,8 +34,4 @@ rep('''                },\n                FILE_STT_COMMIT_DEADLINE_MS);\n    }\
 
 rep('''            if (!FileTurnReplyPolicy.canFinalize(end.inputSerial, fileTurnSerial)\n                    || closed\n                    || end.sessionSerial != sessionSerial\n                    || end.inputSerial != latestInputSerial) return;\n\n            turnFocus = fileTurnFocus;\n''', '''            if (!FileTurnReplyPolicy.canFinalize(end.inputSerial, fileTurnSerial)\n                    || closed\n                    || end.sessionSerial != sessionSerial\n                    || end.inputSerial != latestInputSerial) return;\n\n            long drainLatencyMs = Math.max(0L, now - end.createdAtMs);\n            fileSttCommitDeadlineMs = AdaptiveFileSttDeadlinePolicy.nextDeadlineMs(\n                    fileSttCommitDeadlineMs, drainLatencyMs, fileTurnHadSttTimeout);\n            fileTurnHadSttTimeout = false;\n\n            turnFocus = fileTurnFocus;\n''')
 
-rep('''        long drainLatencyMs = Math.max(0L, now - end.createdAtMs);\n        listener.onFileTurnComplete(\n''', '''        long drainLatencyMs = Math.max(0L, now - end.createdAtMs);\n        listener.onFileTurnComplete(\n''')
-
-# The last replacement intentionally verifies the callback still reports the same
-# measured drain latency after the adaptive state update above.
 p.write_text(s)
