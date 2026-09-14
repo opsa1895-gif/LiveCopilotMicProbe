@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class MicProbeEngine {
     interface Listener {
         void onSnapshot(Snapshot snapshot);
-        void onPcmChunk(short[] samples, int sampleRate);
+        void onPcmChunk(short[] samples, int sampleRate, boolean finalChunk);
         void onVoiceActivity(boolean speaking);
         void onStreamTurnStart(int sampleRate);
         void onPcmStream(short[] samples, int sampleRate);
@@ -276,7 +276,7 @@ final class MicProbeEngine {
                     }
 
                     if (segment.size() >= MAX_SEGMENT_SAMPLES) {
-                        emitSegment(segment, voicedFramesInSegment);
+                        emitSegment(segment, voicedFramesInSegment, false);
                         short[] overlap = segment.tail(OVERLAP_SAMPLES);
                         segment.clear();
                         segment.append(overlap, overlap.length);
@@ -289,7 +289,7 @@ final class MicProbeEngine {
                             SAMPLE_RATE,
                             FRAME_SAMPLES,
                             MIN_SEGMENT_SAMPLES)) {
-                        emitSegment(segment, voicedFramesInSegment);
+                        emitSegment(segment, voicedFramesInSegment, true);
                         listener.onStreamTurnEnd();
                         segment.clear();
                         speaking = false;
@@ -314,7 +314,7 @@ final class MicProbeEngine {
         }
 
         if (segment.size() >= MIN_SEGMENT_SAMPLES && voicedFramesInSegment >= 4) {
-            emitSegment(segment, voicedFramesInSegment);
+            emitSegment(segment, voicedFramesInSegment, true);
         }
         if (speaking) {
             listener.onStreamTurnEnd();
@@ -322,9 +322,9 @@ final class MicProbeEngine {
         }
     }
 
-    private void emitSegment(ShortAccumulator segment, int voicedFrames) {
+    private void emitSegment(ShortAccumulator segment, int voicedFrames, boolean finalChunk) {
         if (voicedFrames < 4 || segment.size() < MIN_SEGMENT_SAMPLES) return;
-        listener.onPcmChunk(segment.toArray(), SAMPLE_RATE);
+        listener.onPcmChunk(segment.toArray(), SAMPLE_RATE, finalChunk);
     }
 
     private static double dbfs(short[] samples, int length) {

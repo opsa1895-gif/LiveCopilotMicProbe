@@ -48,13 +48,15 @@ final class OpenAiCopilotClient {
         final long createdAtMs;
         final long sessionSerial;
         final long inputSerial;
+        final boolean finalChunk;
 
-        AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial) {
+        AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial, boolean finalChunk) {
             this.samples = samples;
             this.sampleRate = sampleRate;
             this.createdAtMs = System.currentTimeMillis();
             this.sessionSerial = sessionSerial;
             this.inputSerial = inputSerial;
+            this.finalChunk = finalChunk;
         }
     }
 
@@ -103,6 +105,8 @@ final class OpenAiCopilotClient {
     private long sessionSerial = 1L;
     private long latestInputSerial;
     private long latestReplySerial;
+    private long fileTurnSerial = -1L;
+    private String fileTurnFocus = "";
     private long lastReplyAtMs;
     private long firstSpeechAtMs;
     private long lastTranscriptAtMs;
@@ -123,6 +127,8 @@ final class OpenAiCopilotClient {
         replyHttp.cancelAll();
         latestInputSerial = 0L;
         latestReplySerial++;
+        fileTurnSerial = -1L;
+        fileTurnFocus = "";
         recentTurns.clear();
         summary = "";
         lastDirectReply = "";
@@ -141,6 +147,8 @@ final class OpenAiCopilotClient {
         // advances it and cancels the previous turn's active transcription.
         latestInputSerial++;
         latestReplySerial++;
+        fileTurnSerial = latestInputSerial;
+        fileTurnFocus = "";
         audioHttp.cancelAll();
         replyHttp.cancelAll();
         return latestInputSerial;
@@ -152,6 +160,8 @@ final class OpenAiCopilotClient {
         // queued/in-flight file STT and reply callback from before the pause stale.
         latestInputSerial++;
         latestReplySerial++;
+        fileTurnSerial = -1L;
+        fileTurnFocus = "";
         audioHttp.cancelAll();
         replyHttp.cancelAll();
     }
@@ -179,6 +189,8 @@ final class OpenAiCopilotClient {
             // and file-reply job stale for the live overlay.
             latestInputSerial++;
             latestReplySerial++;
+            fileTurnSerial = -1L;
+            fileTurnFocus = "";
             audioHttp.cancelAll();
             replyHttp.cancelAll();
             if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
@@ -216,15 +228,15 @@ final class OpenAiCopilotClient {
         lastReplyAtMs = Math.max(lastReplyAtMs, effectiveAt);
     }
 
-    synchronized void submitAudio(short[] samples, int sampleRate, long inputSerial) {
+    synchronized void submitAudio(short[] samples, int sampleRate, long inputSerial, boolean finalChunk) {
         if (closed || samples == null || samples.length == 0) return;
         if (inputSerial <= 0L || inputSerial != latestInputSerial) return;
-        // Chunks from one long utterance must stay in FIFO order and share the same
-        // turn token. A later chunk may supersede reply generation, but it must not
-        // cancel transcription of an earlier chunk from the same speech turn.
+        // Chunks from one long utterance stay FIFO and share the same turn token.
+        // Forced chunks can enrich transcript/context, but only finalChunk may create
+        // a reply for the completed utterance.
         latestReplySerial++;
         replyHttp.cancelAll();
-        AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);
+        AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial, finalChunk);
         audioExecutor.execute(() -> processAudioIfFresh(item));
     }
 
@@ -246,67 +258,105 @@ final class OpenAiCopilotClient {
             listener.onStatus(item.sessionSerial, item.inputSerial, false, "Разпознавам…");
             String raw = transcribe(key, item);
             if (!isCurrentSession(item.sessionSerial)) return;
+            long now = System.currentTimeMillis();
             if (TranscriptQualityPolicy.isLowQuality(raw)) {
-                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
+                if (!finishFileTurnReplyIfNeeded(item, now)) {
+                    listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
+                }
                 return;
             }
 
-            long now = System.currentTimeMillis();
             String focus;
+            String turnFocus;
             synchronized (this) {
                 // File STT may finish after newer speech has already started. Check
                 // freshness while holding the same monitor used for conversation
-                // mutations so stale audio cannot alter recentTurns, summary/reset
-                // state, or lastTranscriptAtMs between a check and the write.
+                // mutations so stale audio cannot alter context or pending turn focus.
                 if (!isProcessableAudioResultLocked(item)) {
                     focus = "";
+                    turnFocus = "";
                 } else {
                     String useful = removeRecentSelfEcho(raw, now);
                     if (useful.isEmpty()) {
                         focus = "";
                     } else {
+                        boolean topicShift = isStrongTopicShift(useful);
                         prepareContextFor(useful, now);
                         focus = commitTranscript(useful, now);
-                        if (!focus.isEmpty() && firstSpeechAtMs == 0L) firstSpeechAtMs = now;
+                        if (!focus.isEmpty()) {
+                            if (fileTurnSerial != item.inputSerial) {
+                                fileTurnSerial = item.inputSerial;
+                                fileTurnFocus = "";
+                            }
+                            fileTurnFocus = FileTurnReplyPolicy.appendFocus(
+                                    fileTurnFocus, focus, topicShift);
+                            if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
+                        }
                     }
+                    turnFocus = consumeFileTurnFocusIfFinalLocked(item);
                 }
             }
-            if (focus.isEmpty()) {
+
+            boolean surface = shouldSurfaceAudioResult(item);
+            if (!focus.isEmpty() && surface) {
+                listener.onTranscript(item.sessionSerial, item.inputSerial, focus);
+            }
+
+            // Forced chunks are useful for live transcript/context only. Waiting for
+            // finalChunk prevents a reply from landing while the speaker is still
+            // continuing the same long utterance.
+            if (!item.finalChunk) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                 return;
             }
-
-            // Re-check after the atomic context commit: newer speech may start after
-            // the lock is released, in which case this older transcript must not be
-            // surfaced even though it was valid context at commit time.
-            if (!shouldSurfaceAudioResult(item)) {
-                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
-                return;
-            }
-
-            listener.onTranscript(item.sessionSerial, item.inputSerial, focus);
-
-            boolean actionable = isActionable(focus);
-            long reference;
-            synchronized (this) {
-                reference = lastReplyAtMs > 0L ? lastReplyAtMs : firstSpeechAtMs;
-            }
-            boolean engagement = !actionable && reference > 0L && now - reference >= ENGAGEMENT_GAP_MS;
-
-            if (actionable || engagement) {
-                if (!queueReplyIfFresh(item, focus, engagement)) {
-                    listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
-                }
-            } else {
+            if (!surface || turnFocus.isEmpty()
+                    || !queueTurnReplyIfNeeded(item, turnFocus, now)) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
             }
         } catch (Throwable ignored) {
+            long now = System.currentTimeMillis();
+            // If only the final STT chunk failed, earlier successfully transcribed
+            // chunks from this same current turn can still drive a useful final reply.
+            if (item.finalChunk && shouldSurfaceAudioResult(item)
+                    && finishFileTurnReplyIfNeeded(item, now)) return;
             // Cancellation caused by newer speech is expected and must not surface
             // as a connection error for the obsolete audio item.
             if (shouldSurfaceAudioResult(item)) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "AI връзката прекъсна");
             }
         }
+    }
+
+    private boolean finishFileTurnReplyIfNeeded(AudioItem item, long now) {
+        String turnFocus;
+        synchronized (this) {
+            turnFocus = consumeFileTurnFocusIfFinalLocked(item);
+        }
+        return !turnFocus.isEmpty()
+                && shouldSurfaceAudioResult(item)
+                && queueTurnReplyIfNeeded(item, turnFocus, now);
+    }
+
+    private boolean queueTurnReplyIfNeeded(AudioItem item, String turnFocus, long now) {
+        if (turnFocus == null || turnFocus.trim().isEmpty() || !shouldSurfaceAudioResult(item)) {
+            return false;
+        }
+        boolean actionable = isActionable(turnFocus);
+        long reference;
+        synchronized (this) {
+            reference = lastReplyAtMs > 0L ? lastReplyAtMs : firstSpeechAtMs;
+        }
+        boolean engagement = !actionable && reference > 0L && now - reference >= ENGAGEMENT_GAP_MS;
+        return (actionable || engagement) && queueReplyIfFresh(item, turnFocus, engagement);
+    }
+
+    private String consumeFileTurnFocusIfFinalLocked(AudioItem item) {
+        if (!FileTurnReplyPolicy.isFinalForTurn(
+                item.finalChunk, item.inputSerial, fileTurnSerial)) return "";
+        String focus = fileTurnFocus;
+        fileTurnSerial = -1L;
+        fileTurnFocus = "";
+        return focus;
     }
 
     private synchronized void prepareContextFor(String raw, long now) {

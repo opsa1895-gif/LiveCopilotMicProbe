@@ -240,7 +240,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     @Override
-    public void onPcmChunk(short[] samples, int sampleRate) {
+    public void onPcmChunk(short[] samples, int sampleRate, boolean finalChunk) {
         if (aiClient == null || engine == null || !engine.isRunning()) return;
 
         // A Realtime-started turn is already backed up continuously by
@@ -249,7 +249,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         short[] candidate = takeFallbackPlus(samples, sampleRate);
         short[] prepared = AudioPreprocessor.prepare(candidate, sampleRate);
-        if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate, fileSpeechEpoch);
+        if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate, fileSpeechEpoch, finalChunk);
     }
 
     @Override
@@ -876,7 +876,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         int rate = fallbackTurnSampleRate;
         fallbackTurnAudio = null;
         short[] prepared = AudioPreprocessor.prepare(audio, rate);
-        if (prepared.length > 0) aiClient.submitAudio(prepared, rate, fileSpeechEpoch);
+        if (prepared.length > 0) aiClient.submitAudio(prepared, rate, fileSpeechEpoch, true);
     }
 
     private synchronized void clearFallbackTurnAudio() {
