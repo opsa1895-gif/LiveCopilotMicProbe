@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 57
-        versionName = "0.56.0-atomic-file-context"
+        versionCode = 58
+        versionName = "0.57.0-cancel-stale-file-stt"
     }
 
     compileOptions {
