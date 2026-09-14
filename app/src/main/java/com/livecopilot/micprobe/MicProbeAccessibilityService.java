@@ -23,7 +23,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private static final String UI_PREFS = "live_copilot_ui";
     private static final long CONTEXT_RESET_AFTER_PAUSE_MS = 90_000L;
     private static final long SEMANTIC_CONTEXT_IDLE_RESET_MS = 45_000L;
-    private static final long SEMANTIC_MIN_GAP_MS = 4_000L;
+    private static final long SEMANTIC_MIN_GAP_MS = 2_500L;
     private static final long SEMANTIC_FOCUS_MAX_AGE_MS = 12_000L;
     private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     private static final long SELF_ECHO_WINDOW_MS = 12_000L;
