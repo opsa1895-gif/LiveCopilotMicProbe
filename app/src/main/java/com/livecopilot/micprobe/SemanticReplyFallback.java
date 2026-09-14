@@ -29,6 +29,8 @@ final class SemanticReplyFallback {
     private final Listener listener;
     private final LatestWinsExecutor decisionExecutor = new LatestWinsExecutor(2);
     private final LatestWinsExecutor variantExecutor = new LatestWinsExecutor(1);
+    private final HttpConnectionRegistry decisionHttp = new HttpConnectionRegistry();
+    private final HttpConnectionRegistry variantHttp = new HttpConnectionRegistry();
     private long serial;
     private boolean closed;
 
@@ -40,6 +42,8 @@ final class SemanticReplyFallback {
     synchronized long request(String rollingContext, String focus, String previousSuggestion) {
         if (closed) return -1L;
         long requestId = ++serial;
+        decisionHttp.cancelAll();
+        variantHttp.cancelAll();
         long createdAt = System.currentTimeMillis();
         String contextCopy = rollingContext == null ? "" : rollingContext;
         String focusCopy = focus == null ? "" : focus;
@@ -51,11 +55,15 @@ final class SemanticReplyFallback {
 
     synchronized void invalidate() {
         serial++;
+        decisionHttp.cancelAll();
+        variantHttp.cancelAll();
     }
 
     synchronized void shutdown() {
         closed = true;
         serial++;
+        decisionHttp.cancelAll();
+        variantHttp.cancelAll();
         decisionExecutor.shutdownNow();
         variantExecutor.shutdownNow();
     }
@@ -81,7 +89,8 @@ final class SemanticReplyFallback {
             req.put("input", input(system, user));
 
             HttpResult result = post(
-                    req, key, DECISION_CONNECT_TIMEOUT_MS, DECISION_READ_TIMEOUT_MS);
+                    req, key, DECISION_CONNECT_TIMEOUT_MS, DECISION_READ_TIMEOUT_MS,
+                    decisionHttp, requestId, createdAt);
             if (result.code < 200 || result.code >= 300 || !isCurrent(requestId, createdAt)) return;
 
             JSONObject json = parseJsonText(result.body);
@@ -119,7 +128,8 @@ final class SemanticReplyFallback {
             req.put("input", input(system, user));
 
             HttpResult result = post(
-                    req, key, STYLE_CONNECT_TIMEOUT_MS, STYLE_READ_TIMEOUT_MS);
+                    req, key, STYLE_CONNECT_TIMEOUT_MS, STYLE_READ_TIMEOUT_MS,
+                    variantHttp, requestId, createdAt);
             if (result.code < 200 || result.code >= 300 || !isCurrent(requestId, createdAt)) return;
 
             JSONObject json = parseJsonText(result.body);
@@ -153,7 +163,8 @@ final class SemanticReplyFallback {
     }
 
     private HttpResult post(JSONObject req, String key, int connectTimeoutMs,
-                            int readTimeoutMs) throws Exception {
+                            int readTimeoutMs, HttpConnectionRegistry registry,
+                            long requestId, long createdAt) throws Exception {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL("https://api.openai.com/v1/responses").openConnection();
@@ -164,11 +175,20 @@ final class SemanticReplyFallback {
             c.setRequestProperty("Authorization", "Bearer " + key);
             c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             c.setRequestProperty("Connection", "keep-alive");
+            registry.register(c);
+            // Covers invalidation racing between runDecision/runVariants preflight and
+            // connection registration. Once registered, cancelAll() can abort in-flight IO.
+            if (!isCurrent(requestId, createdAt)) {
+                throw new java.io.InterruptedIOException("stale semantic request");
+            }
             c.getOutputStream().write(req.toString().getBytes(StandardCharsets.UTF_8));
             int code = c.getResponseCode();
             return new HttpResult(code, read(c, code));
         } finally {
-            if (c != null) c.disconnect();
+            if (c != null) {
+                registry.unregister(c);
+                try { c.disconnect(); } catch (Throwable ignored) {}
+            }
         }
     }
 
