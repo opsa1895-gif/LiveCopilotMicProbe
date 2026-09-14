@@ -263,8 +263,9 @@ final class OpenAiCopilotClient {
             }
             boolean engagement = !actionable && reference > 0L && now - reference >= ENGAGEMENT_GAP_MS;
 
-            if (actionable || engagement) queueReply(focus, engagement);
-            else listener.onStatus("Слушам");
+            if (actionable || engagement) {
+                if (!queueReplyIfFresh(item, focus, engagement)) listener.onStatus("Слушам");
+            } else listener.onStatus("Слушам");
         } catch (Throwable ignored) {
             if (isCurrentSession(item.sessionSerial)) listener.onStatus("AI връзката прекъсна");
         }
@@ -315,13 +316,18 @@ final class OpenAiCopilotClient {
         return clean;
     }
 
-    private void queueReply(String focus, boolean engagement) {
+    private boolean queueReplyIfFresh(AudioItem item, String focus, boolean engagement) {
         ReplyJob job;
         synchronized (this) {
+            // Re-check freshness atomically with reply-job creation. Without this, a
+            // newer input can arrive after the earlier surface check and an old file
+            // transcript can issue a fresh reply serial over the newer conversation.
+            if (!isFreshAudioResultLocked(item)) return false;
             long serial = ++latestReplySerial;
             job = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);
         }
         replyExecutor.execute(() -> processReply(job));
+        return true;
     }
 
     private void processReply(ReplyJob job) {
@@ -418,6 +424,10 @@ final class OpenAiCopilotClient {
     }
 
     private synchronized boolean shouldSurfaceAudioResult(AudioItem item) {
+        return isFreshAudioResultLocked(item);
+    }
+
+    private boolean isFreshAudioResultLocked(AudioItem item) {
         long ageMs = Math.max(0L, System.currentTimeMillis() - item.createdAtMs);
         boolean sessionMatches = !closed && item.sessionSerial == sessionSerial;
         return FileSttFreshnessPolicy.shouldSurface(
