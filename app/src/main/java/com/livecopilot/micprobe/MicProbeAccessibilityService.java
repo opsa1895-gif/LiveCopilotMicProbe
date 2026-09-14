@@ -27,6 +27,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private static final long SEMANTIC_FOCUS_MAX_AGE_MS = 12_000L;
     private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     private static final long SELF_ECHO_WINDOW_MS = 12_000L;
+    private static final long CROSS_SOURCE_DEDUP_WINDOW_MS = 6_000L;
     private static final int SEMANTIC_CONTEXT_TURNS = 6;
     private static final int MAX_FALLBACK_AUDIO_SAMPLES = 16_000 * 12;
 
@@ -52,6 +53,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     private String foregroundPackage = "неизвестно";
     private String lastTranscript = "";
+    private String lastAcceptedSourceTranscript = "";
     private String realtimePartial = "";
     private String realtimeState = "off";
     private String aiStatus = "Готов";
@@ -66,6 +68,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private long lastRealtimeTurnSerial;
     private long lastFileTranscriptAtMs;
     private long lastRealtimeTranscriptAtMs;
+    private long lastAcceptedSourceAtMs;
+    private boolean lastAcceptedFromRealtime;
     private long answerUpdatedAtMs;
     private long pausedAtMs;
     private long pendingSemanticAtMs;
@@ -252,8 +256,29 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             return;
         }
         if (echoAdjusted) lastSelfEchoAtMs = now;
+
+        String sourceTranscript = useful;
+        if (!useful.isEmpty()
+                && !lastAcceptedSourceTranscript.isEmpty()
+                && fromRealtime != lastAcceptedFromRealtime
+                && lastAcceptedSourceAtMs > 0L
+                && now >= lastAcceptedSourceAtMs
+                && now - lastAcceptedSourceAtMs <= CROSS_SOURCE_DEDUP_WINDOW_MS) {
+            String novel = CrossSourceTranscriptPolicy.novelPart(lastAcceptedSourceTranscript, useful);
+            if (novel.isEmpty()) {
+                aiStatus = "Слушам";
+                renderStatus();
+                renderDebug();
+                return;
+            }
+            useful = novel;
+        }
+
         if (fromRealtime) lastRealtimeTranscriptAtMs = now;
         else lastFileTranscriptAtMs = now;
+        lastAcceptedSourceTranscript = sourceTranscript;
+        lastAcceptedSourceAtMs = now;
+        lastAcceptedFromRealtime = fromRealtime;
         if (fromRealtime && !useful.isEmpty() && realtimeTranscriber != null) {
             realtimeTranscriber.rememberAcceptedTranscript(useful);
         }
@@ -607,6 +632,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             currentReplies = null;
             answerUpdatedAtMs = 0L;
             lastTranscript = "";
+            lastAcceptedSourceTranscript = "";
+            lastAcceptedSourceAtMs = 0L;
+            lastAcceptedFromRealtime = false;
             realtimePartial = "";
             lastRealtimeTurnSerial = 0L;
             lastFileTranscriptAtMs = 0L;
