@@ -1,0 +1,106 @@
+name: Apply v0.52 callback freshness patch
+
+on:
+  push:
+    branches: [ v0-52-file-callback-freshness ]
+    paths:
+      - '.github/workflows/v0-52-file-callback-freshness.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: v0-52-file-callback-freshness
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.6.1'
+
+      - name: Patch callback freshness
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"missing expected block in {path}: {old[:120]!r}")
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected one match in {path}, found {text.count(old)}")
+              p.write_text(text.replace(old, new, 1))
+
+          client = "app/src/main/java/com/livecopilot/micprobe/OpenAiCopilotClient.java"
+          service = "app/src/main/java/com/livecopilot/micprobe/MicProbeAccessibilityService.java"
+          gradle = "app/build.gradle.kts"
+
+          replace_once(client,
+              '''    interface Listener {\n        void onTranscript(String transcript);\n        void onReplies(Replies replies);\n        void onStatus(String status);\n    }''',
+              '''    interface Listener {\n        void onTranscript(long sessionSerial, long inputSerial, String transcript);\n        void onReplies(long sessionSerial, long replySerial, Replies replies);\n        void onStatus(String status);\n    }''')
+
+          replace_once(client,
+              '''    synchronized void noteNewSpeech() {\n        if (closed) return;\n        // Invalidate in-flight file STT/reply work as soon as a newer utterance starts,\n        // rather than waiting for its final transcript.\n        latestInputSerial++;\n        latestReplySerial++;\n    }''',
+              '''    synchronized void noteNewSpeech() {\n        if (closed) return;\n        // Invalidate in-flight file STT/reply work as soon as a newer utterance starts,\n        // rather than waiting for its final transcript.\n        latestInputSerial++;\n        latestReplySerial++;\n    }\n\n    synchronized void invalidatePendingWork() {\n        if (closed) return;\n        // Preserve rolling conversation context across a short pause, but make every\n        // queued/in-flight file STT and reply callback from before the pause stale.\n        latestInputSerial++;\n        latestReplySerial++;\n        audioQueue.clear();\n    }\n\n    synchronized boolean isTranscriptCallbackCurrent(long callbackSessionSerial, long inputSerial) {\n        return AsyncCallbackFreshnessPolicy.shouldAccept(\n                callbackSessionSerial, sessionSerial, inputSerial, latestInputSerial, closed);\n    }\n\n    synchronized boolean isReplyCallbackCurrent(long callbackSessionSerial, long replySerial) {\n        return AsyncCallbackFreshnessPolicy.shouldAccept(\n                callbackSessionSerial, sessionSerial, replySerial, latestReplySerial, closed);\n    }''')
+
+          replace_once(client,
+              '''            listener.onTranscript(focus);''',
+              '''            listener.onTranscript(item.sessionSerial, item.inputSerial, focus);''')
+
+          p = Path(client)
+          text = p.read_text()
+          old = 'listener.onReplies('
+          count = text.count(old)
+          if count != 4:
+              raise SystemExit(f"expected 4 reply callbacks, found {count}")
+          text = text.replace(old, 'listener.onReplies(job.sessionSerial, job.serial, ')
+          p.write_text(text)
+
+          replace_once(service,
+              '''    @Override\n    public void onTranscript(String transcript) {\n        acceptTranscript(transcript, false);\n    }''',
+              '''    @Override\n    public void onTranscript(long sessionSerial, long inputSerial, String transcript) {\n        getMainExecutor().execute(() ->\n                handleFileTranscript(sessionSerial, inputSerial, transcript));\n    }\n\n    private synchronized void handleFileTranscript(long sessionSerial, long inputSerial, String transcript) {\n        if (aiClient == null || !aiClient.isTranscriptCallbackCurrent(sessionSerial, inputSerial)) return;\n        if (engine == null || !engine.isRunning()) return;\n        acceptTranscript(transcript, false);\n    }''')
+
+          old_replies = '''    @Override\n    public void onReplies(OpenAiCopilotClient.Replies replies) {\n        getMainExecutor().execute(() -> {\n            if (engine == null || !engine.isRunning() || replies == null) return;\n            // If a realtime final transcript arrived after the last file transcript,\n            // a delayed file-path reply belongs to older speech and must not overwrite it.\n            if (lastFileTranscriptAtMs < lastRealtimeTranscriptAtMs) return;\n\n            if (semanticFallback != null) semanticFallback.invalidate();\n            activeSemanticRequestId = -1L;\n            semanticPrimaryAppliedAtMs = 0L;\n            pendingSemanticFocus = "";\n\n            long now = System.currentTimeMillis();\n            boolean primaryOnly = hasText(replies.direct)\n                    && !hasText(replies.sarcastic)\n                    && !hasText(replies.funny)\n                    && !hasText(replies.calm);\n            if (thinkingStartedAtMs > 0L\n                    && now >= thinkingStartedAtMs\n                    && now - thinkingStartedAtMs <= LATENCY_SAMPLE_MAX_AGE_MS) {\n                long elapsed = now - thinkingStartedAtMs;\n                if (primaryOnly) {\n                    lastFirstReplyLatencyMs = elapsed;\n                } else {\n                    if (lastFirstReplyLatencyMs < 0L) lastFirstReplyLatencyMs = elapsed;\n                    lastStylesLatencyMs = elapsed;\n                    thinkingStartedAtMs = 0L;\n                }\n            }\n\n            currentReplies = replies;\n            answerUpdatedAtMs = now;\n            if (answerText != null) answerText.setAlpha(1f);\n            if (collapsed && headerText != null) headerText.setText("AI •");\n            renderSelectedReply();\n            renderDebug();\n        });\n    }'''
+          new_replies = '''    @Override\n    public void onReplies(long sessionSerial, long replySerial, OpenAiCopilotClient.Replies replies) {\n        getMainExecutor().execute(() ->\n                handleFileReplies(sessionSerial, replySerial, replies));\n    }\n\n    private synchronized void handleFileReplies(\n            long sessionSerial, long replySerial, OpenAiCopilotClient.Replies replies) {\n        if (aiClient == null || !aiClient.isReplyCallbackCurrent(sessionSerial, replySerial)) return;\n        if (engine == null || !engine.isRunning() || replies == null) return;\n        // Keep the older cross-lane timestamp guard as defense in depth. The callback\n        // serial check above also rejects work queued before newer speech or a pause.\n        if (lastFileTranscriptAtMs < lastRealtimeTranscriptAtMs) return;\n\n        if (semanticFallback != null) semanticFallback.invalidate();\n        activeSemanticRequestId = -1L;\n        semanticPrimaryAppliedAtMs = 0L;\n        pendingSemanticFocus = "";\n\n        long now = System.currentTimeMillis();\n        boolean primaryOnly = hasText(replies.direct)\n                && !hasText(replies.sarcastic)\n                && !hasText(replies.funny)\n                && !hasText(replies.calm);\n        if (thinkingStartedAtMs > 0L\n                && now >= thinkingStartedAtMs\n                && now - thinkingStartedAtMs <= LATENCY_SAMPLE_MAX_AGE_MS) {\n            long elapsed = now - thinkingStartedAtMs;\n            if (primaryOnly) {\n                lastFirstReplyLatencyMs = elapsed;\n            } else {\n                if (lastFirstReplyLatencyMs < 0L) lastFirstReplyLatencyMs = elapsed;\n                lastStylesLatencyMs = elapsed;\n                thinkingStartedAtMs = 0L;\n            }\n        }\n\n        currentReplies = replies;\n        answerUpdatedAtMs = now;\n        if (answerText != null) answerText.setAlpha(1f);\n        if (collapsed && headerText != null) headerText.setText("AI •");\n        renderSelectedReply();\n        renderDebug();\n    }'''
+          replace_once(service, old_replies, new_replies)
+
+          replace_once(service,
+              '''        if (engine.isRunning()) {\n            engine.stop("user_paused");\n            if (realtimeTranscriber != null) realtimeTranscriber.stop();''',
+              '''        if (engine.isRunning()) {\n            if (aiClient != null) aiClient.invalidatePendingWork();\n            engine.stop("user_paused");\n            if (realtimeTranscriber != null) realtimeTranscriber.stop();''')
+
+          replace_once(gradle,
+              '''        versionCode = 52\n        versionName = "0.51.0-realtime-event-freshness"''',
+              '''        versionCode = 53\n        versionName = "0.52.0-file-callback-freshness"''')
+
+      - name: Run unit tests
+        run: gradle --no-daemon :app:testDebugUnitTest
+
+      - name: Build debug APK
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Commit patch
+        run: |
+          rm .github/workflows/v0-52-file-callback-freshness.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: guard file callbacks across speech and pause"
+          git push origin HEAD:v0-52-file-callback-freshness
