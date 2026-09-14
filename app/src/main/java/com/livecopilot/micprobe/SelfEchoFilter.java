@@ -52,7 +52,7 @@ final class SelfEchoFilter {
 
     private static String originalTailAfterWords(String original, int consumedWords) {
         if (original == null || original.isEmpty() || consumedWords < 0) return "";
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("[\p{L}\p{N}]+").matcher(original);
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("[\\p{L}\\p{N}]+").matcher(original);
         int seen = 0;
         while (matcher.find()) {
             if (seen == consumedWords) {
