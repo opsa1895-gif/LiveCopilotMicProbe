@@ -280,7 +280,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastAcceptedSourceTranscript = sourceTranscript;
         lastAcceptedSourceAtMs = now;
         lastAcceptedFromRealtime = fromRealtime;
-        if (fromRealtime && !useful.isEmpty() && realtimeTranscriber != null) {
+        if (!useful.isEmpty() && realtimeTranscriber != null) {
+            // Keep one STT context across Realtime and file fallback so reconnects
+            // continue from the actual latest conversation.
             realtimeTranscriber.rememberAcceptedTranscript(useful);
         }
         if (!useful.isEmpty()) {
