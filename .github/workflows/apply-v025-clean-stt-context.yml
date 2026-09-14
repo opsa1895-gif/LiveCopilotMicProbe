@@ -31,3 +31,5 @@ jobs:
           git diff --cached --check
           git commit -m "v0.25: keep realtime STT context echo-free [v025-applied]"
           git push origin HEAD:copilot-v0-25-clean-stt-context
+
+# retrigger after guarded patch update
