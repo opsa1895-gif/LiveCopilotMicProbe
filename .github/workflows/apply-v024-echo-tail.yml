@@ -1,0 +1,210 @@
+name: Apply v0.24 echo-tail integration
+
+on:
+  push:
+    branches: [copilot-v0-24-echo-tail]
+    paths:
+      - .github/workflows/apply-v024-echo-tail.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: copilot-v0-24-echo-tail
+          fetch-depth: 0
+
+      - name: Apply guarded source patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              s = p.read_text(encoding='utf-8')
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected 1 match, got {count} for {old[:120]!r}')
+              p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          client = 'app/src/main/java/com/livecopilot/micprobe/OpenAiCopilotClient.java'
+          service = 'app/src/main/java/com/livecopilot/micprobe/MicProbeAccessibilityService.java'
+          gradle = 'app/build.gradle.kts'
+
+          replace_once(client,
+              '''            long now = System.currentTimeMillis();
+            prepareContextFor(raw, now);
+            String focus = commitTranscript(raw, now);
+            if (focus.isEmpty()) {
+                listener.onStatus("Слушам");
+                return;
+            }
+
+            listener.onTranscript(focus);
+            if (isRecentSelfEcho(focus, now)) {
+                listener.onStatus("Слушам");
+                return;
+            }
+''',
+              '''            long now = System.currentTimeMillis();
+            String useful = removeRecentSelfEcho(raw, now);
+            if (useful.isEmpty()) {
+                listener.onStatus("Слушам");
+                return;
+            }
+
+            prepareContextFor(useful, now);
+            String focus = commitTranscript(useful, now);
+            if (focus.isEmpty()) {
+                listener.onStatus("Слушам");
+                return;
+            }
+
+            listener.onTranscript(focus);
+''')
+
+          replace_once(client,
+              '''    private synchronized boolean isRecentSelfEcho(String focus, long now) {
+        if (lastReplyAtMs <= 0L || now < lastReplyAtMs
+                || now - lastReplyAtMs > SELF_ECHO_WINDOW_MS) return false;
+        return SelfEchoFilter.matchesAny(
+                focus,
+                lastDirectReply,
+                lastSarcasticReply,
+                lastFunnyReply,
+                lastCalmReply);
+    }
+''',
+              '''    private synchronized String removeRecentSelfEcho(String transcript, long now) {
+        String value = clean(transcript);
+        if (value.isEmpty()) return "";
+        if (lastReplyAtMs <= 0L || now < lastReplyAtMs
+                || now - lastReplyAtMs > SELF_ECHO_WINDOW_MS) return value;
+        return SelfEchoFilter.removeEchoPrefix(
+                value,
+                lastDirectReply,
+                lastSarcasticReply,
+                lastFunnyReply,
+                lastCalmReply);
+    }
+''')
+
+          replace_once(service,
+              '''        lastTranscript = clean;
+        if (!clean.isEmpty() && isLikelySelfEcho(clean, now)) {
+            lastSelfEchoAtMs = now;
+            pendingSemanticFocus = "";
+            aiStatus = "Слушам";
+            renderStatus();
+            renderDebug();
+            return;
+        }
+        if (!clean.isEmpty()) {
+            if (semanticFallback != null && activeSemanticRequestId >= 0L) {
+                semanticFallback.invalidate();
+                activeSemanticRequestId = -1L;
+                semanticPrimaryAppliedAtMs = 0L;
+            }
+            if ((lastSemanticTranscriptAtMs > 0L
+                    && now - lastSemanticTranscriptAtMs >= SEMANTIC_CONTEXT_IDLE_RESET_MS)
+                    || isSemanticTopicShift(clean)) {
+                semanticTurns.clear();
+            }
+            lastSemanticTranscriptAtMs = now;
+            semanticTurns.addLast(clean);
+            while (semanticTurns.size() > SEMANTIC_CONTEXT_TURNS) semanticTurns.removeFirst();
+            pendingSemanticFocus = clean;
+            pendingSemanticAtMs = now;
+        }
+
+        renderDebug();
+        if (fromRealtime && !clean.isEmpty()) {
+            scheduleSemanticFallbackIfNeeded();
+        }
+''',
+              '''        String useful = removeLikelySelfEcho(clean, now);
+        boolean echoAdjusted = !clean.equals(useful);
+        lastTranscript = useful.isEmpty() ? clean : useful;
+        if (!clean.isEmpty() && useful.isEmpty()) {
+            lastSelfEchoAtMs = now;
+            pendingSemanticFocus = "";
+            aiStatus = "Слушам";
+            renderStatus();
+            renderDebug();
+            return;
+        }
+        if (echoAdjusted) lastSelfEchoAtMs = now;
+        if (!useful.isEmpty()) {
+            if (semanticFallback != null && activeSemanticRequestId >= 0L) {
+                semanticFallback.invalidate();
+                activeSemanticRequestId = -1L;
+                semanticPrimaryAppliedAtMs = 0L;
+            }
+            if ((lastSemanticTranscriptAtMs > 0L
+                    && now - lastSemanticTranscriptAtMs >= SEMANTIC_CONTEXT_IDLE_RESET_MS)
+                    || isSemanticTopicShift(useful)) {
+                semanticTurns.clear();
+            }
+            lastSemanticTranscriptAtMs = now;
+            semanticTurns.addLast(useful);
+            while (semanticTurns.size() > SEMANTIC_CONTEXT_TURNS) semanticTurns.removeFirst();
+            pendingSemanticFocus = useful;
+            pendingSemanticAtMs = now;
+        }
+
+        renderDebug();
+        if (fromRealtime && !useful.isEmpty()) {
+            scheduleSemanticFallbackIfNeeded();
+        }
+''')
+
+          replace_once(service,
+              '''    private boolean isLikelySelfEcho(String transcript, long now) {
+        if (currentReplies == null || answerUpdatedAtMs <= 0L) return false;
+        long age = now - answerUpdatedAtMs;
+        if (age < 0L || age > SELF_ECHO_WINDOW_MS) return false;
+        return SelfEchoFilter.matchesAny(
+                transcript,
+                currentReplies.direct,
+                currentReplies.sarcastic,
+                currentReplies.funny,
+                currentReplies.calm);
+    }
+''',
+              '''    private String removeLikelySelfEcho(String transcript, long now) {
+        String value = transcript == null ? "" : transcript.replace('\\n', ' ').trim();
+        if (value.isEmpty()) return "";
+        if (currentReplies == null || answerUpdatedAtMs <= 0L) return value;
+        long age = now - answerUpdatedAtMs;
+        if (age < 0L || age > SELF_ECHO_WINDOW_MS) return value;
+        return SelfEchoFilter.removeEchoPrefix(
+                value,
+                currentReplies.direct,
+                currentReplies.sarcastic,
+                currentReplies.funny,
+                currentReplies.calm);
+    }
+''')
+
+          replace_once(gradle,
+              '''        versionCode = 23
+        versionName = "0.23.0-network-deadlines"
+''',
+              '''        versionCode = 24
+        versionName = "0.24.0-echo-tail"
+''')
+
+      - name: Commit patched sources
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/livecopilot/micprobe/OpenAiCopilotClient.java \
+                  app/src/main/java/com/livecopilot/micprobe/MicProbeAccessibilityService.java \
+                  app/build.gradle.kts
+          git diff --cached --check
+          git commit -m "v0.24: integrate echo-tail filtering [v024-applied]"
+          git push origin HEAD:copilot-v0-24-echo-tail
