@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 51
-        versionName = "0.50.0-reconnect-cooldown"
+        versionCode = 52
+        versionName = "0.51.0-realtime-event-freshness"
     }
 
     compileOptions {
