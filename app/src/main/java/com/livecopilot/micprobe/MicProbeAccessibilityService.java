@@ -248,7 +248,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     @Override
-    public void onTranscript(String transcript) {
+    public void onTranscript(long sessionSerial, long inputSerial, String transcript) {
+        getMainExecutor().execute(() ->
+                handleFileTranscript(sessionSerial, inputSerial, transcript));
+    }
+
+    private synchronized void handleFileTranscript(long sessionSerial, long inputSerial, String transcript) {
+        if (aiClient == null || !aiClient.isTranscriptCallbackCurrent(sessionSerial, inputSerial)) return;
+        if (engine == null || !engine.isRunning()) return;
         acceptTranscript(transcript, false);
     }
 
@@ -355,43 +362,48 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     @Override
-    public void onReplies(OpenAiCopilotClient.Replies replies) {
-        getMainExecutor().execute(() -> {
-            if (engine == null || !engine.isRunning() || replies == null) return;
-            // If a realtime final transcript arrived after the last file transcript,
-            // a delayed file-path reply belongs to older speech and must not overwrite it.
-            if (lastFileTranscriptAtMs < lastRealtimeTranscriptAtMs) return;
+    public void onReplies(long sessionSerial, long replySerial, OpenAiCopilotClient.Replies replies) {
+        getMainExecutor().execute(() ->
+                handleFileReplies(sessionSerial, replySerial, replies));
+    }
 
-            if (semanticFallback != null) semanticFallback.invalidate();
-            activeSemanticRequestId = -1L;
-            semanticPrimaryAppliedAtMs = 0L;
-            pendingSemanticFocus = "";
+    private synchronized void handleFileReplies(
+            long sessionSerial, long replySerial, OpenAiCopilotClient.Replies replies) {
+        if (aiClient == null || !aiClient.isReplyCallbackCurrent(sessionSerial, replySerial)) return;
+        if (engine == null || !engine.isRunning() || replies == null) return;
+        // Keep the older cross-lane timestamp guard as defense in depth. The callback
+        // serial check above also rejects work queued before newer speech or a pause.
+        if (lastFileTranscriptAtMs < lastRealtimeTranscriptAtMs) return;
 
-            long now = System.currentTimeMillis();
-            boolean primaryOnly = hasText(replies.direct)
-                    && !hasText(replies.sarcastic)
-                    && !hasText(replies.funny)
-                    && !hasText(replies.calm);
-            if (thinkingStartedAtMs > 0L
-                    && now >= thinkingStartedAtMs
-                    && now - thinkingStartedAtMs <= LATENCY_SAMPLE_MAX_AGE_MS) {
-                long elapsed = now - thinkingStartedAtMs;
-                if (primaryOnly) {
-                    lastFirstReplyLatencyMs = elapsed;
-                } else {
-                    if (lastFirstReplyLatencyMs < 0L) lastFirstReplyLatencyMs = elapsed;
-                    lastStylesLatencyMs = elapsed;
-                    thinkingStartedAtMs = 0L;
-                }
+        if (semanticFallback != null) semanticFallback.invalidate();
+        activeSemanticRequestId = -1L;
+        semanticPrimaryAppliedAtMs = 0L;
+        pendingSemanticFocus = "";
+
+        long now = System.currentTimeMillis();
+        boolean primaryOnly = hasText(replies.direct)
+                && !hasText(replies.sarcastic)
+                && !hasText(replies.funny)
+                && !hasText(replies.calm);
+        if (thinkingStartedAtMs > 0L
+                && now >= thinkingStartedAtMs
+                && now - thinkingStartedAtMs <= LATENCY_SAMPLE_MAX_AGE_MS) {
+            long elapsed = now - thinkingStartedAtMs;
+            if (primaryOnly) {
+                lastFirstReplyLatencyMs = elapsed;
+            } else {
+                if (lastFirstReplyLatencyMs < 0L) lastFirstReplyLatencyMs = elapsed;
+                lastStylesLatencyMs = elapsed;
+                thinkingStartedAtMs = 0L;
             }
+        }
 
-            currentReplies = replies;
-            answerUpdatedAtMs = now;
-            if (answerText != null) answerText.setAlpha(1f);
-            if (collapsed && headerText != null) headerText.setText("AI •");
-            renderSelectedReply();
-            renderDebug();
-        });
+        currentReplies = replies;
+        answerUpdatedAtMs = now;
+        if (answerText != null) answerText.setAlpha(1f);
+        if (collapsed && headerText != null) headerText.setText("AI •");
+        renderSelectedReply();
+        renderDebug();
     }
 
     @Override
@@ -653,6 +665,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private void toggleRunning() {
         if (engine == null) return;
         if (engine.isRunning()) {
+            if (aiClient != null) aiClient.invalidatePendingWork();
             engine.stop("user_paused");
             if (realtimeTranscriber != null) realtimeTranscriber.stop();
             pausedAtMs = System.currentTimeMillis();
