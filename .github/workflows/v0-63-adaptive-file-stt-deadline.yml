@@ -1,5 +1,6 @@
 name: Validate v0.63 adaptive file STT deadline
 
+# v2: method-scoped patch guards
 on:
   push:
     branches:
