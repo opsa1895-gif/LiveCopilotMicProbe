@@ -1,0 +1,31 @@
+name: Apply v0.39 realtime watchdog
+
+on:
+  push:
+    branches: [copilot-v0-39-realtime-watchdog]
+    paths:
+      - .github/workflows/apply-v039-realtime-watchdog.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: copilot-v0-39-realtime-watchdog
+          fetch-depth: 0
+
+      - name: Apply guarded source patch
+        run: python .github/scripts/apply_v039.py
+
+      - name: Commit patched sources
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/com/livecopilot/micprobe/RealtimeTranscriptionClient.java app/build.gradle.kts
+          git diff --cached --check
+          git commit -m "v0.39: add realtime transcript watchdog [v039-applied]"
+          git push origin HEAD:copilot-v0-39-realtime-watchdog
