@@ -587,18 +587,23 @@ final class OpenAiCopilotClient {
         return "";
     }
 
-    private static boolean isActionable(String text) {
+    static boolean isActionable(String text) {
         String v = normalize(text);
         if (v.isEmpty()) return false;
         if (text.contains("?")) return true;
 
         List<String> ws = words(v);
         if (!ws.isEmpty()) {
-            String first = ws.get(0);
-            if (first.equals("как") || first.equals("какво") || first.equals("защо") ||
-                    first.equals("кой") || first.equals("коя") || first.equals("кое") || first.equals("кои") ||
-                    first.equals("къде") || first.equals("кога") || first.equals("колко") ||
-                    first.equals("откъде") || first.equals("дали")) return true;
+            int firstMeaningful = 0;
+            int skipped = 0;
+            while (firstMeaningful < ws.size() - 1
+                    && skipped < 3
+                    && isDiscoursePrefix(ws.get(firstMeaningful))) {
+                firstMeaningful++;
+                skipped++;
+            }
+            String first = ws.get(firstMeaningful);
+            if (isQuestionStarter(first)) return true;
             if (ws.size() >= 2 && ws.contains("ли")) return true;
         }
 
@@ -608,6 +613,19 @@ final class OpenAiCopilotClient {
                 "цена", "струва", "поръч", "куп", "откъде си", "години", "на колко",
                 "здравей", "здрасти", "добър вечер", "обичам", "харесвам", "красив", "красива", "готин", "готина",
                 "грозен", "грозна", "тъп", "тъпа", "идиот", "hate", "love you");
+    }
+
+    private static boolean isQuestionStarter(String word) {
+        return word.equals("как") || word.equals("какво") || word.equals("защо") ||
+                word.equals("кой") || word.equals("коя") || word.equals("кое") || word.equals("кои") ||
+                word.equals("къде") || word.equals("кога") || word.equals("колко") ||
+                word.equals("откъде") || word.equals("дали");
+    }
+
+    private static boolean isDiscoursePrefix(String word) {
+        return word.equals("а") || word.equals("и") || word.equals("ами") ||
+                word.equals("добре") || word.equals("значи") || word.equals("чакай") ||
+                word.equals("така") || word.equals("но");
     }
 
     private static boolean isStrongTopicShift(String value) {
