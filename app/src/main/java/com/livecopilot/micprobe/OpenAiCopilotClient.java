@@ -50,6 +50,8 @@ final class OpenAiCopilotClient {
         final long createdAtMs;
         final long sessionSerial;
         final long inputSerial;
+        private volatile HttpURLConnection activeConnection;
+        private volatile boolean cancelled;
 
         AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial) {
             this.samples = samples;
@@ -57,6 +59,32 @@ final class OpenAiCopilotClient {
             this.createdAtMs = System.currentTimeMillis();
             this.sessionSerial = sessionSerial;
             this.inputSerial = inputSerial;
+        }
+
+        synchronized void attachConnection(HttpURLConnection connection) {
+            if (connection == null) return;
+            if (cancelled) {
+                try { connection.disconnect(); } catch (Throwable ignored) {}
+                return;
+            }
+            activeConnection = connection;
+        }
+
+        synchronized void detachConnection(HttpURLConnection connection) {
+            if (activeConnection == connection) activeConnection = null;
+        }
+
+        synchronized void cancel() {
+            cancelled = true;
+            HttpURLConnection connection = activeConnection;
+            activeConnection = null;
+            if (connection != null) {
+                try { connection.disconnect(); } catch (Throwable ignored) {}
+            }
+        }
+
+        boolean isCancelled() {
+            return cancelled;
         }
     }
 
@@ -99,6 +127,9 @@ final class OpenAiCopilotClient {
     private static final long ENGAGEMENT_GAP_MS = 12_000L;
     private static final long MAX_REPLY_AGE_MS = 12_000L;
     private static final long SELF_ECHO_WINDOW_MS = 12_000L;
+    // Absolute from chunk submission, so ordered waits cannot stack this delay
+    // once per chunk at the end of a long speech turn.
+    private static final long FILE_STT_COMMIT_DEADLINE_MS = 8_000L;
     private static final int PRIMARY_CONNECT_TIMEOUT_MS = 5_000;
     private static final int PRIMARY_READ_TIMEOUT_MS = 8_000;
     private static final int STYLE_CONNECT_TIMEOUT_MS = 8_000;
@@ -255,7 +286,17 @@ final class OpenAiCopilotClient {
         AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);
         audioExecutor.submit(
                 () -> transcribeAudioIfFresh(item),
-                (raw, error) -> processAudioResult(item, raw, error));
+                (raw, error) -> {
+                    if (error instanceof java.util.concurrent.TimeoutException) {
+                        // Drop only the overdue chunk. Later same-turn chunks can
+                        // still commit in order and feed the final turn reply.
+                        item.cancel();
+                        listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
+                        return;
+                    }
+                    processAudioResult(item, raw, error);
+                },
+                FILE_STT_COMMIT_DEADLINE_MS);
     }
 
     synchronized void finishAudioTurn(long inputSerial) {
@@ -545,6 +586,7 @@ final class OpenAiCopilotClient {
     }
 
     private boolean isProcessableAudioResultLocked(AudioItem item) {
+        if (item == null || item.isCancelled()) return false;
         long ageMs = Math.max(0L, System.currentTimeMillis() - item.createdAtMs);
         boolean sessionMatches = !closed && item.sessionSerial == sessionSerial;
         return FileSttFreshnessPolicy.shouldAccept(
@@ -621,8 +663,8 @@ final class OpenAiCopilotClient {
                 last = new IllegalStateException("STT " + r.code);
             } catch (Exception e) {
                 last = e;
-                // A newer utterance cancelled this request. Never retry stale audio,
-                // otherwise the single-thread worker can still be blocked by obsolete STT.
+                // A newer utterance or the bounded commit deadline cancelled this request.
+                // Never retry stale audio and keep the parallel STT workers available.
                 if (!shouldProcessAudioResult(item)) throw e;
             }
             if (attempt == 0) {
@@ -645,6 +687,7 @@ final class OpenAiCopilotClient {
             c = connection("https://api.openai.com/v1/audio/transcriptions", key, 40_000);
             c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
             audioHttp.register(c);
+            item.attachConnection(c);
             // Covers invalidation after the preflight but before registration became
             // visible to cancelAll().
             if (!shouldProcessAudioResult(item)) {
@@ -665,6 +708,7 @@ final class OpenAiCopilotClient {
             return new HttpResult(code, read(c, code));
         } finally {
             if (c != null) {
+                item.detachConnection(c);
                 audioHttp.unregister(c);
                 try { c.disconnect(); } catch (Throwable ignored) {}
             }

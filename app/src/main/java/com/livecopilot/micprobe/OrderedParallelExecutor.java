@@ -7,6 +7,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 final class OrderedParallelExecutor<T> {
     interface Work<T> {
@@ -27,14 +29,33 @@ final class OrderedParallelExecutor<T> {
     }
 
     synchronized void submit(Work<T> work, Commit<T> commit) {
+        submit(work, commit, 0L);
+    }
+
+    synchronized void submit(Work<T> work, Commit<T> commit, long maxWaitMs) {
         if (shutdown || work == null || commit == null) return;
+        long boundedWaitMs = Math.max(0L, maxWaitMs);
+        long deadlineNanos = boundedWaitMs > 0L
+                ? System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(boundedWaitMs)
+                : Long.MAX_VALUE;
         Future<T> future = workers.submit(work::run);
         futures.add(future);
         committer.execute(() -> {
             T result = null;
             Throwable error = null;
             try {
-                result = future.get();
+                if (boundedWaitMs > 0L) {
+                    long remainingNanos = deadlineNanos - System.nanoTime();
+                    if (remainingNanos <= 0L) {
+                        throw new TimeoutException("ordered work deadline exceeded");
+                    }
+                    result = future.get(remainingNanos, TimeUnit.NANOSECONDS);
+                } else {
+                    result = future.get();
+                }
+            } catch (TimeoutException timeout) {
+                future.cancel(true);
+                error = timeout;
             } catch (CancellationException cancelled) {
                 removeFuture(future);
                 return;
