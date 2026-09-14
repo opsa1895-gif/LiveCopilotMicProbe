@@ -248,6 +248,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             return;
         }
         if (echoAdjusted) lastSelfEchoAtMs = now;
+        if (fromRealtime && !useful.isEmpty() && realtimeTranscriber != null) {
+            realtimeTranscriber.rememberAcceptedTranscript(useful);
+        }
         if (!useful.isEmpty()) {
             if (semanticFallback != null && activeSemanticRequestId >= 0L) {
                 semanticFallback.invalidate();
