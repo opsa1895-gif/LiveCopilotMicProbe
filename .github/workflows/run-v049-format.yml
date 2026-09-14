@@ -1,0 +1,30 @@
+name: Run v0.49 formatter
+
+on:
+  push:
+    branches:
+      - copilot-v0-49-clear-send-recovery
+    paths:
+      - .github/scripts/format_v049.py
+      - .github/workflows/run-v049-format.yml
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: copilot-v0-49-clear-send-recovery
+      - name: Format source
+        run: python .github/scripts/format_v049.py
+      - name: Commit formatting
+        run: |
+          git config user.name "opsa1895-gif"
+          git config user.email "opsa1895@gmail.com"
+          git add app/src/main/java/com/livecopilot/micprobe/RealtimeTranscriptionClient.java
+          git diff --cached --quiet && exit 1
+          git commit -m "style: format v0.49 realtime recovery"
+          git push origin HEAD:copilot-v0-49-clear-send-recovery
