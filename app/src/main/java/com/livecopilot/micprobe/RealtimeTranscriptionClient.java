@@ -10,7 +10,6 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -42,8 +41,9 @@ final class RealtimeTranscriptionClient {
     private final Context context;
     private final Listener listener;
     private final OkHttpClient httpClient;
+    private final OkHttpClient fallbackHttpClient;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
-    private final ExecutorService fallbackExecutor = Executors.newSingleThreadExecutor();
+    private final LatestWinsExecutor fallbackExecutor = new LatestWinsExecutor(2);
     private final StreamingAudioPreprocessor streamingPreprocessor = new StreamingAudioPreprocessor();
     private final PcmTurnBuffer activeBackup = new PcmTurnBuffer(MAX_BACKUP_SAMPLES);
     private final PcmTurnBuffer pendingBackup = new PcmTurnBuffer(MAX_BACKUP_SAMPLES);
@@ -62,6 +62,9 @@ final class RealtimeTranscriptionClient {
     private long committedTurnSerial;
     private long pendingBackupTurnSerial;
     private long generation;
+    private long speechEpoch;
+    private long committedSpeechEpoch;
+    private long latestRecoveryId;
     private int activeBackupSampleRate = 16_000;
     private int pendingBackupSampleRate = 16_000;
     private int sentSamples;
@@ -75,6 +78,12 @@ final class RealtimeTranscriptionClient {
                 .connectTimeout(12, TimeUnit.SECONDS)
                 .readTimeout(40, TimeUnit.SECONDS)
                 .writeTimeout(40, TimeUnit.SECONDS)
+                .build();
+        this.fallbackHttpClient = this.httpClient.newBuilder()
+                .callTimeout(12, TimeUnit.SECONDS)
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(9, TimeUnit.SECONDS)
+                .writeTimeout(9, TimeUnit.SECONDS)
                 .build();
     }
 
@@ -100,6 +109,11 @@ final class RealtimeTranscriptionClient {
             try { old.close(1000, "pause"); } catch (Throwable ignored) {}
         }
         listener.onState("off");
+    }
+
+    synchronized void noteNewSpeech() {
+        speechEpoch++;
+        latestRecoveryId++;
     }
 
     synchronized boolean beginTurn(int sourceSampleRate) {
@@ -181,6 +195,7 @@ final class RealtimeTranscriptionClient {
         }
 
         committedTurnSerial = activeTurnSerial;
+        committedSpeechEpoch = speechEpoch;
         awaitingCompletion = true;
         sentSamples = 0;
 
@@ -392,26 +407,31 @@ final class RealtimeTranscriptionClient {
     private void recoverCommittedTurn(long turn, long recoveryGeneration, String reason) {
         final short[] audio;
         final int sampleRate;
+        final long recoveryId;
+        final long queuedAtMs = System.currentTimeMillis();
         synchronized (this) {
             if (turn <= 0L || pendingBackupTurnSerial != turn || pendingBackup.size() == 0) return;
+            if (RealtimeRecoveryPolicy.isSuperseded(committedSpeechEpoch, speechEpoch)) {
+                clearPendingBackupLocked(turn);
+                return;
+            }
             audio = pendingBackup.copy();
             sampleRate = pendingBackupSampleRate;
+            recoveryId = ++latestRecoveryId;
             clearPendingBackupLocked(turn);
         }
 
         listener.onState("file_fallback");
         fallbackExecutor.execute(() -> {
+            if (!shouldDeliverRecovery(recoveryId, recoveryGeneration, queuedAtMs)) return;
+
             String transcript = "";
             try {
                 short[] prepared = AudioPreprocessor.prepare(audio, sampleRate);
                 if (prepared.length > 0) transcript = fallbackTranscribe(prepared, sampleRate);
             } catch (Throwable ignored) {}
 
-            boolean deliver;
-            synchronized (RealtimeTranscriptionClient.this) {
-                deliver = !closed && wanted && generation == recoveryGeneration;
-            }
-            if (!deliver) return;
+            if (!shouldDeliverRecovery(recoveryId, recoveryGeneration, queuedAtMs)) return;
 
             if (!transcript.isEmpty()) {
                 listener.onFinal(turn, transcript);
@@ -419,6 +439,13 @@ final class RealtimeTranscriptionClient {
                 listener.onState("fallback_failed");
             }
         });
+    }
+
+    private synchronized boolean shouldDeliverRecovery(long recoveryId, long recoveryGeneration, long queuedAtMs) {
+        long ageMs = Math.max(0L, System.currentTimeMillis() - queuedAtMs);
+        boolean sessionMatches = !closed && wanted && generation == recoveryGeneration;
+        return RealtimeRecoveryPolicy.shouldDeliver(
+                recoveryId, latestRecoveryId, ageMs, sessionMatches);
     }
 
     private String fallbackTranscribe(short[] samples, int sampleRate) throws Exception {
@@ -442,7 +469,7 @@ final class RealtimeTranscriptionClient {
                 .post(multipart.build())
                 .build();
 
-        try (Response response = httpClient.newCall(request).execute()) {
+        try (Response response = fallbackHttpClient.newCall(request).execute()) {
             if (!response.isSuccessful() || response.body() == null) return "";
             return clean(new JSONObject(response.body().string()).optString("text", ""));
         }
