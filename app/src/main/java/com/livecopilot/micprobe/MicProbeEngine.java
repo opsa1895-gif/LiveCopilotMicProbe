@@ -45,7 +45,7 @@ final class MicProbeEngine {
     private static final int FRAME_SAMPLES = 320; // 20 ms
     private static final int PRE_ROLL_FRAMES = 20; // 400 ms
     private static final int START_VOICE_FRAMES = 2; // 40 ms
-    private static final int MIN_SEGMENT_SAMPLES = SAMPLE_RATE;
+    private static final int MIN_SEGMENT_SAMPLES = SAMPLE_RATE * 3 / 4;
     private static final int MAX_SEGMENT_SAMPLES = SAMPLE_RATE * 6;
     private static final int OVERLAP_SAMPLES = (int) (SAMPLE_RATE * 0.8); // forced long-turn split only
 
@@ -282,6 +282,7 @@ final class MicProbeEngine {
                     } else if (SpeechTurnPolicy.shouldEndTurn(
                             consecutiveSilenceFrames,
                             segment.size(),
+                            voicedFramesInSegment,
                             SAMPLE_RATE,
                             FRAME_SAMPLES,
                             MIN_SEGMENT_SAMPLES)) {
