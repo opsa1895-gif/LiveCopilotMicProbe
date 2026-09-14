@@ -44,7 +44,6 @@ final class MicProbeEngine {
     private static final int SAMPLE_RATE = 16_000;
     private static final int FRAME_SAMPLES = 320; // 20 ms
     private static final int PRE_ROLL_FRAMES = 20; // 400 ms
-    private static final int START_VOICE_FRAMES = 2; // 40 ms
     private static final int MIN_SEGMENT_SAMPLES = SAMPLE_RATE * 3 / 4;
     private static final int MAX_SEGMENT_SAMPLES = SAMPLE_RATE * 6;
     private static final int OVERLAP_SAMPLES = (int) (SAMPLE_RATE * 0.8); // forced long-turn split only
@@ -239,8 +238,12 @@ final class MicProbeEngine {
                 if (!speaking && latestDb < -30.0) {
                     noiseFloorDb = noiseFloorDb * 0.97 + latestDb * 0.03;
                 }
-                boolean voiced = VoiceActivityPolicy.isVoiced(
-                        latestDb, noiseFloorDb, speaking, silenced);
+                int startFramesRequired = speaking
+                        ? 0
+                        : VoiceActivityPolicy.startFramesRequired(latestDb, noiseFloorDb, silenced);
+                boolean voiced = speaking
+                        ? VoiceActivityPolicy.isVoiced(latestDb, noiseFloorDb, true, silenced)
+                        : startFramesRequired > 0;
 
                 short[] frameCopy = frame.clone();
 
@@ -249,7 +252,7 @@ final class MicProbeEngine {
                     while (preRoll.size() > PRE_ROLL_FRAMES) preRoll.removeFirst();
 
                     consecutiveVoiceFrames = voiced ? consecutiveVoiceFrames + 1 : 0;
-                    if (consecutiveVoiceFrames >= START_VOICE_FRAMES) {
+                    if (startFramesRequired > 0 && consecutiveVoiceFrames >= startFramesRequired) {
                         speaking = true;
                         consecutiveSilenceFrames = 0;
                         voicedFramesInSegment = consecutiveVoiceFrames;

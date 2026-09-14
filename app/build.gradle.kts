@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 37
-        versionName = "0.36.0-fast-actionable"
+        versionCode = 38
+        versionName = "0.37.0-quiet-speech-vad"
     }
 
     compileOptions {
