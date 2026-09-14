@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 59
-        versionName = "0.58.0-latest-file-stt-queue"
+        versionCode = 60
+        versionName = "0.59.0-preserve-long-file-turns"
     }
 
     compileOptions {

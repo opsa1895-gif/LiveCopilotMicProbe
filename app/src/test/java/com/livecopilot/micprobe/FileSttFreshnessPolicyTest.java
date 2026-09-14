@@ -49,4 +49,27 @@ public class FileSttFreshnessPolicyTest {
         assertTrue(FileSttFreshnessPolicy.shouldAccept(itemSerial, itemSerial, 400L, true));
         assertFalse(FileSttFreshnessPolicy.shouldAccept(itemSerial, itemSerial + 1L, 401L, true));
     }
+
+    @Test
+    public void sameSpeechTurnChunksShareFreshnessToken() {
+        long turnSerial = 21L;
+        assertTrue(FileSttFreshnessPolicy.shouldAccept(turnSerial, turnSerial, 500L, true));
+        assertTrue(FileSttFreshnessPolicy.shouldAccept(turnSerial, turnSerial, 6_500L, true));
+        assertFalse(FileSttFreshnessPolicy.shouldAccept(turnSerial, turnSerial + 1L, 6_501L, true));
+    }
+
+    @Test
+    public void slowCurrentTurnCanEnrichContextWithoutSurfacingLive() {
+        long turnSerial = 22L;
+        long ageMs = FileSttFreshnessPolicy.MAX_SURFACE_AGE_MS + 1L;
+        assertTrue(FileSttFreshnessPolicy.shouldAccept(turnSerial, turnSerial, ageMs, true));
+        assertFalse(FileSttFreshnessPolicy.shouldSurface(turnSerial, turnSerial, ageMs, true));
+    }
+
+    @Test
+    public void veryOldCurrentTurnStopsProcessing() {
+        long turnSerial = 23L;
+        assertFalse(FileSttFreshnessPolicy.shouldAccept(
+                turnSerial, turnSerial, FileSttFreshnessPolicy.MAX_PROCESS_AGE_MS + 1L, true));
+    }
 }
