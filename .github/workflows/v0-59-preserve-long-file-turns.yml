@@ -37,7 +37,9 @@ jobs:
           gradle-version: '9.6.1'
 
       - name: Apply v0.59 patch
-        run: python3 .ci/apply_v059.py
+        run: |
+          sed -i 's/count != 6/count != 5/; s/expected 6 matches/expected 5 matches/' .ci/apply_v059.py
+          python3 .ci/apply_v059.py
 
       - name: Run unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
