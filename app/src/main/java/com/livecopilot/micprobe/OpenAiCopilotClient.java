@@ -88,15 +88,13 @@ final class OpenAiCopilotClient {
     private final Context context;
     private final Listener listener;
     private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
-    private final ExecutorService replyExecutor = Executors.newSingleThreadExecutor();
+    private final LatestWinsExecutor replyExecutor = new LatestWinsExecutor(2);
     private final ExecutorService variantExecutor = Executors.newSingleThreadExecutor();
     private final Deque<AudioItem> audioQueue = new ArrayDeque<>();
     private final Deque<String> recentTurns = new ArrayDeque<>();
 
     private boolean audioWorkerRunning;
-    private boolean replyWorkerRunning;
     private boolean closed;
-    private ReplyJob pendingReply;
     private long sessionSerial = 1L;
     private long latestReplySerial;
     private long lastReplyAtMs;
@@ -117,7 +115,6 @@ final class OpenAiCopilotClient {
         sessionSerial++;
         latestReplySerial++;
         audioQueue.clear();
-        pendingReply = null;
         recentTurns.clear();
         summary = "";
         lastDirectReply = "";
@@ -223,7 +220,6 @@ final class OpenAiCopilotClient {
         lastCalmReply = "";
         lastReplyAtMs = 0L;
         firstSpeechAtMs = 0L;
-        pendingReply = null;
         latestReplySerial++;
     }
 
@@ -253,28 +249,12 @@ final class OpenAiCopilotClient {
     }
 
     private void queueReply(String focus, boolean engagement) {
+        ReplyJob job;
         synchronized (this) {
             long serial = ++latestReplySerial;
-            pendingReply = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);
-            if (replyWorkerRunning) return;
-            replyWorkerRunning = true;
+            job = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);
         }
-        replyExecutor.execute(this::drainReplies);
-    }
-
-    private void drainReplies() {
-        while (true) {
-            ReplyJob job;
-            synchronized (this) {
-                job = pendingReply;
-                pendingReply = null;
-                if (job == null || closed) {
-                    replyWorkerRunning = false;
-                    return;
-                }
-            }
-            processReply(job);
-        }
+        replyExecutor.execute(() -> processReply(job));
     }
 
     private void processReply(ReplyJob job) {
@@ -378,8 +358,7 @@ final class OpenAiCopilotClient {
             sessionSerial++;
             latestReplySerial++;
             audioQueue.clear();
-            pendingReply = null;
-        }
+            }
         audioExecutor.shutdownNow();
         replyExecutor.shutdownNow();
         variantExecutor.shutdownNow();
