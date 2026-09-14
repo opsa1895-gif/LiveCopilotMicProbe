@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.livecopilot.micprobe.PcmResamplerTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-09-14T19:11:26.660Z" hostname="runnervmlun5p" time="0.001">
-  <properties/>
-  <testcase name="invalidInputIsSafe" classname="com.livecopilot.micprobe.PcmResamplerTest" time="0.0"/>
-  <testcase name="converts20ms16kFrameTo20ms24kFrame" classname="com.livecopilot.micprobe.PcmResamplerTest" time="0.001"/>
-  <testcase name="sameRateReturnsEquivalentCopy" classname="com.livecopilot.micprobe.PcmResamplerTest" time="0.0"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>
