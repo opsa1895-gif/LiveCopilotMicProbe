@@ -26,4 +26,11 @@ public class FileSttFreshnessPolicyTest {
     public void oldSessionCannotSurface() {
         assertFalse(FileSttFreshnessPolicy.shouldSurface(4L, 4L, 1_000L, false));
     }
+
+    @Test
+    public void queueTimeRecheckRejectsItemAfterSerialAdvances() {
+        long itemSerial = 7L;
+        assertTrue(FileSttFreshnessPolicy.shouldSurface(itemSerial, itemSerial, 300L, true));
+        assertFalse(FileSttFreshnessPolicy.shouldSurface(itemSerial, itemSerial + 1L, 301L, true));
+    }
 }
