@@ -134,6 +134,14 @@ final class OpenAiCopilotClient {
         lastTranscriptAtMs = 0L;
     }
 
+    synchronized void noteNewSpeech() {
+        if (closed) return;
+        // Invalidate in-flight file STT/reply work as soon as a newer utterance starts,
+        // rather than waiting for its final transcript.
+        latestInputSerial++;
+        latestReplySerial++;
+    }
+
     synchronized void rememberAcceptedTranscript(String transcript) {
         if (closed) return;
         String value = clean(transcript);

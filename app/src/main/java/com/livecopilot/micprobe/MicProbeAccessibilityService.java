@@ -101,6 +101,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             public void onState(String state) {
                 getMainExecutor().execute(() -> {
                     realtimeState = state == null ? "?" : state;
+                    if (!"ready".equals(realtimeState)) realtimePartial = "";
                     renderDebug();
                 });
             }
@@ -179,8 +180,19 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     @Override
     public void onStreamTurnStart(int sampleRate) {
         clearFallbackTurnAudio();
+        realtimePartial = "";
+
+        // New speech immediately makes older generated work stale. Do this before
+        // waiting for a final transcript so an old answer cannot pop over a new turn.
+        if (aiClient != null) aiClient.noteNewSpeech();
+        if (semanticFallback != null) semanticFallback.invalidate();
+        activeSemanticRequestId = -1L;
+        semanticPrimaryAppliedAtMs = 0L;
+        pendingSemanticFocus = "";
+
         if (realtimeTranscriber != null) realtimeTranscriber.noteNewSpeech();
         realtimeTurnActive = realtimeTranscriber != null && realtimeTranscriber.beginTurn(sampleRate);
+        renderDebug();
     }
 
     @Override
