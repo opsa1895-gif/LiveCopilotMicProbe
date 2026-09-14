@@ -84,11 +84,50 @@ if source.count(old_submit) != 1:
 source = source.replace(old_submit, new_submit, 1)
 source_path.write_text(source)
 
-# Add deterministic coverage for the one-pending-task latest-wins executor behavior.
+# Existing coverage proves the one-slot queue discards older pending work with two
+# workers. Add the exact single-worker mode now used by file STT.
 test_path = Path('app/src/test/java/com/livecopilot/micprobe/LatestWinsExecutorTest.java')
-if test_path.exists():
-    raise SystemExit('LatestWinsExecutorTest.java already exists')
-test_path.write_text('''package com.livecopilot.micprobe;\n\nimport org.junit.Test;\n\nimport java.util.concurrent.CountDownLatch;\nimport java.util.concurrent.TimeUnit;\nimport java.util.concurrent.atomic.AtomicBoolean;\n\nimport static org.junit.Assert.assertFalse;\nimport static org.junit.Assert.assertTrue;\n\npublic class LatestWinsExecutorTest {\n    @Test\n    public void newestPendingTaskReplacesOlderQueuedTask() throws Exception {\n        LatestWinsExecutor executor = new LatestWinsExecutor(1);\n        CountDownLatch firstStarted = new CountDownLatch(1);\n        CountDownLatch releaseFirst = new CountDownLatch(1);\n        CountDownLatch newestFinished = new CountDownLatch(1);\n        AtomicBoolean middleRan = new AtomicBoolean(false);\n\n        try {\n            executor.execute(() -> {\n                firstStarted.countDown();\n                try {\n                    releaseFirst.await(2, TimeUnit.SECONDS);\n                } catch (InterruptedException ignored) {\n                    Thread.currentThread().interrupt();\n                }\n            });\n            assertTrue(firstStarted.await(2, TimeUnit.SECONDS));\n\n            executor.execute(() -> middleRan.set(true));\n            executor.execute(newestFinished::countDown);\n\n            releaseFirst.countDown();\n            assertTrue(newestFinished.await(2, TimeUnit.SECONDS));\n            assertFalse(middleRan.get());\n        } finally {\n            releaseFirst.countDown();\n            executor.shutdownNow();\n        }\n    }\n}\n''')
+tests = test_path.read_text()
+if 'singleWorkerAlsoKeepsOnlyNewestPendingTask' in tests:
+    raise SystemExit('single-worker latest-wins test already exists')
+if not tests.rstrip().endswith('}'):
+    raise SystemExit('unexpected LatestWinsExecutorTest.java ending')
+method = '''
+
+    @Test
+    public void singleWorkerAlsoKeepsOnlyNewestPendingTask() throws Exception {
+        LatestWinsExecutor executor = new LatestWinsExecutor(1);
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch newestRan = new CountDownLatch(1);
+        AtomicBoolean oldQueuedRan = new AtomicBoolean(false);
+
+        try {
+            executor.execute(() -> {
+                firstStarted.countDown();
+                try {
+                    releaseFirst.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            assertTrue(firstStarted.await(2, TimeUnit.SECONDS));
+
+            executor.execute(() -> oldQueuedRan.set(true));
+            executor.execute(newestRan::countDown);
+
+            releaseFirst.countDown();
+            assertTrue(newestRan.await(2, TimeUnit.SECONDS));
+            Thread.sleep(80L);
+            assertFalse(oldQueuedRan.get());
+        } finally {
+            releaseFirst.countDown();
+            executor.shutdownNow();
+        }
+    }
+'''
+trimmed = tests.rstrip()
+test_path.write_text(trimmed[:-1] + method + '}\n')
 
 gradle_path = Path('app/build.gradle.kts')
 gradle = gradle_path.read_text()
