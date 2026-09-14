@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 50
-        versionName = "0.49.0-clear-send-recovery"
+        versionCode = 51
+        versionName = "0.50.0-pcm-ring-buffer"
     }
 
     compileOptions {
