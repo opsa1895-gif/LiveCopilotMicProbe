@@ -92,7 +92,7 @@ final class OpenAiCopilotClient {
 
     private final Context context;
     private final Listener listener;
-    private final LatestWinsExecutor audioExecutor = new LatestWinsExecutor(1);
+    private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
     private final LatestWinsExecutor replyExecutor = new LatestWinsExecutor(2);
     private final ExecutorService variantExecutor = Executors.newSingleThreadExecutor();
     private final HttpConnectionRegistry replyHttp = new HttpConnectionRegistry();
@@ -134,14 +134,16 @@ final class OpenAiCopilotClient {
         lastTranscriptAtMs = 0L;
     }
 
-    synchronized void noteNewSpeech() {
-        if (closed) return;
-        // Invalidate in-flight file STT/reply work as soon as a newer utterance starts,
-        // rather than waiting for its final transcript.
+    synchronized long noteNewSpeech() {
+        if (closed) return -1L;
+        // One input serial represents the whole speech turn. Forced 6s file-STT
+        // chunks from that turn share the token; only genuinely newer speech
+        // advances it and cancels the previous turn's active transcription.
         latestInputSerial++;
         latestReplySerial++;
         audioHttp.cancelAll();
         replyHttp.cancelAll();
+        return latestInputSerial;
     }
 
     synchronized void invalidatePendingWork() {
@@ -214,23 +216,22 @@ final class OpenAiCopilotClient {
         lastReplyAtMs = Math.max(lastReplyAtMs, effectiveAt);
     }
 
-    synchronized void submitAudio(short[] samples, int sampleRate) {
+    synchronized void submitAudio(short[] samples, int sampleRate, long inputSerial) {
         if (closed || samples == null || samples.length == 0) return;
-        long inputSerial = ++latestInputSerial;
-        // New file audio supersedes any older in-flight transcription as well as
-        // reply work derived from older audio. LatestWinsExecutor also keeps only
-        // one pending task, so bursty fallback audio cannot build a stale backlog.
+        if (inputSerial <= 0L || inputSerial != latestInputSerial) return;
+        // Chunks from one long utterance must stay in FIFO order and share the same
+        // turn token. A later chunk may supersede reply generation, but it must not
+        // cancel transcription of an earlier chunk from the same speech turn.
         latestReplySerial++;
-        audioHttp.cancelAll();
         replyHttp.cancelAll();
         AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);
         audioExecutor.execute(() -> processAudioIfFresh(item));
     }
 
     private void processAudioIfFresh(AudioItem item) {
-        // A queued task may have been superseded before the worker became free.
-        // Reject it before API-key loading, status callbacks, or network work.
-        if (item == null || !shouldSurfaceAudioResult(item)) return;
+        // Old turns are rejected before API-key loading/status/network work, while
+        // multiple chunks from the current long turn remain processable in FIFO order.
+        if (item == null || !shouldProcessAudioResult(item)) return;
         processAudio(item);
     }
 
@@ -257,7 +258,7 @@ final class OpenAiCopilotClient {
                 // freshness while holding the same monitor used for conversation
                 // mutations so stale audio cannot alter recentTurns, summary/reset
                 // state, or lastTranscriptAtMs between a check and the write.
-                if (!isFreshAudioResultLocked(item)) {
+                if (!isProcessableAudioResultLocked(item)) {
                     focus = "";
                 } else {
                     String useful = removeRecentSelfEcho(raw, now);
@@ -360,7 +361,7 @@ final class OpenAiCopilotClient {
             // Re-check freshness atomically with reply-job creation. Without this, a
             // newer input can arrive after the earlier surface check and an old file
             // transcript can issue a fresh reply serial over the newer conversation.
-            if (!isFreshAudioResultLocked(item)) return false;
+            if (!isSurfaceableAudioResultLocked(item)) return false;
             long serial = ++latestReplySerial;
             replyHttp.cancelAll();
             job = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);
@@ -474,14 +475,25 @@ final class OpenAiCopilotClient {
                 lastCalmReply);
     }
 
-    private synchronized boolean shouldSurfaceAudioResult(AudioItem item) {
-        return isFreshAudioResultLocked(item);
+    private synchronized boolean shouldProcessAudioResult(AudioItem item) {
+        return isProcessableAudioResultLocked(item);
     }
 
-    private boolean isFreshAudioResultLocked(AudioItem item) {
+    private synchronized boolean shouldSurfaceAudioResult(AudioItem item) {
+        return isSurfaceableAudioResultLocked(item);
+    }
+
+    private boolean isProcessableAudioResultLocked(AudioItem item) {
         long ageMs = Math.max(0L, System.currentTimeMillis() - item.createdAtMs);
         boolean sessionMatches = !closed && item.sessionSerial == sessionSerial;
         return FileSttFreshnessPolicy.shouldAccept(
+                item.inputSerial, latestInputSerial, ageMs, sessionMatches);
+    }
+
+    private boolean isSurfaceableAudioResultLocked(AudioItem item) {
+        long ageMs = Math.max(0L, System.currentTimeMillis() - item.createdAtMs);
+        boolean sessionMatches = !closed && item.sessionSerial == sessionSerial;
+        return FileSttFreshnessPolicy.shouldSurface(
                 item.inputSerial, latestInputSerial, ageMs, sessionMatches);
     }
 
@@ -539,7 +551,7 @@ final class OpenAiCopilotClient {
         Exception last = null;
         for (int attempt = 0; attempt < 2; attempt++) {
             try {
-                if (!shouldSurfaceAudioResult(item)) {
+                if (!shouldProcessAudioResult(item)) {
                     throw new java.io.InterruptedIOException("stale transcription");
                 }
                 HttpResult r = transcriptionRequest(key, wav, item);
@@ -550,10 +562,10 @@ final class OpenAiCopilotClient {
                 last = e;
                 // A newer utterance cancelled this request. Never retry stale audio,
                 // otherwise the single-thread worker can still be blocked by obsolete STT.
-                if (!shouldSurfaceAudioResult(item)) throw e;
+                if (!shouldProcessAudioResult(item)) throw e;
             }
             if (attempt == 0) {
-                if (!shouldSurfaceAudioResult(item)) {
+                if (!shouldProcessAudioResult(item)) {
                     throw new java.io.InterruptedIOException("stale transcription");
                 }
                 Thread.sleep(500L);
@@ -566,7 +578,7 @@ final class OpenAiCopilotClient {
         String boundary = "----LiveCopilot" + System.nanoTime();
         HttpURLConnection c = null;
         try {
-            if (!shouldSurfaceAudioResult(item)) {
+            if (!shouldProcessAudioResult(item)) {
                 throw new java.io.InterruptedIOException("stale transcription");
             }
             c = connection("https://api.openai.com/v1/audio/transcriptions", key, 40_000);
@@ -574,7 +586,7 @@ final class OpenAiCopilotClient {
             audioHttp.register(c);
             // Covers invalidation after the preflight but before registration became
             // visible to cancelAll().
-            if (!shouldSurfaceAudioResult(item)) {
+            if (!shouldProcessAudioResult(item)) {
                 throw new java.io.InterruptedIOException("stale transcription");
             }
             try (DataOutputStream out = new DataOutputStream(c.getOutputStream())) {

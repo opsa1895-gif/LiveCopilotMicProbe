@@ -65,6 +65,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private volatile boolean realtimeTurnActive;
     private volatile boolean realtimeBackupStreaming;
     private volatile long realtimeSpeechEpoch = -1L;
+    private volatile long fileSpeechEpoch = -1L;
     private short[] fallbackTurnAudio;
     private int fallbackTurnSampleRate = 16_000;
     private long lastRealtimeTurnSerial;
@@ -186,7 +187,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         // New speech immediately makes older generated work stale. Do this before
         // waiting for a final transcript so an old answer cannot pop over a new turn.
-        if (aiClient != null) aiClient.noteNewSpeech();
+        fileSpeechEpoch = aiClient != null ? aiClient.noteNewSpeech() : -1L;
         if (semanticFallback != null) semanticFallback.invalidate();
         activeSemanticRequestId = -1L;
         activeSemanticEpoch = -1L;
@@ -248,7 +249,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         short[] candidate = takeFallbackPlus(samples, sampleRate);
         short[] prepared = AudioPreprocessor.prepare(candidate, sampleRate);
-        if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate);
+        if (prepared.length > 0) aiClient.submitAudio(prepared, sampleRate, fileSpeechEpoch);
     }
 
     @Override
@@ -691,6 +692,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (engine.isRunning()) {
             semanticEpoch++;
             if (aiClient != null) aiClient.invalidatePendingWork();
+            fileSpeechEpoch = -1L;
             engine.stop("user_paused");
             if (realtimeTranscriber != null) realtimeTranscriber.stop();
             pausedAtMs = System.currentTimeMillis();
@@ -725,6 +727,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             lastAcceptedFromRealtime = false;
             realtimePartial = "";
             realtimeSpeechEpoch = -1L;
+            fileSpeechEpoch = -1L;
             lastRealtimeTurnSerial = 0L;
             lastFileTranscriptAtMs = 0L;
             lastRealtimeTranscriptAtMs = 0L;
@@ -873,7 +876,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         int rate = fallbackTurnSampleRate;
         fallbackTurnAudio = null;
         short[] prepared = AudioPreprocessor.prepare(audio, rate);
-        if (prepared.length > 0) aiClient.submitAudio(prepared, rate);
+        if (prepared.length > 0) aiClient.submitAudio(prepared, rate, fileSpeechEpoch);
     }
 
     private synchronized void clearFallbackTurnAudio() {
