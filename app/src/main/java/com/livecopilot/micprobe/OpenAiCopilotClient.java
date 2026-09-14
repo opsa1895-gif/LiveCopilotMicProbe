@@ -25,6 +25,7 @@ final class OpenAiCopilotClient {
     interface Listener {
         void onTranscript(long sessionSerial, long inputSerial, String transcript);
         void onReplies(long sessionSerial, long replySerial, Replies replies);
+        void onFileTurnComplete(long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued);
         void onStatus(long sessionSerial, long workSerial, boolean replyWork, String status);
     }
 
@@ -351,8 +352,13 @@ final class OpenAiCopilotClient {
 
         boolean actionable = isActionable(turnFocus);
         boolean engagement = !actionable && reference > 0L && now - reference >= ENGAGEMENT_GAP_MS;
-        if (!(actionable || engagement)
-                || !queueReplyIfFresh(end, turnFocus, engagement)) {
+        boolean mainReplyQueued = (actionable || engagement)
+                && queueReplyIfFresh(end, turnFocus, engagement);
+        // File semantic fallback is also gated by the complete speech turn. The
+        // service re-validates this callback on the main thread before scheduling it.
+        listener.onFileTurnComplete(
+                end.sessionSerial, end.inputSerial, turnFocus, mainReplyQueued);
+        if (!mainReplyQueued) {
             listener.onStatus(end.sessionSerial, end.inputSerial, false, "Слушам");
         }
     }

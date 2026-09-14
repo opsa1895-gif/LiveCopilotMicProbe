@@ -15,6 +15,13 @@ public class FileTurnReplyPolicyTest {
     }
 
     @Test
+    public void semanticFallbackRunsOnlyAfterTurnWithoutMainReply() {
+        assertTrue(FileTurnReplyPolicy.shouldUseSemanticFallback(false, "цялата реплика"));
+        assertFalse(FileTurnReplyPolicy.shouldUseSemanticFallback(true, "цялата реплика"));
+        assertFalse(FileTurnReplyPolicy.shouldUseSemanticFallback(false, "   "));
+    }
+
+    @Test
     public void focusAccumulatesAcrossForcedChunks() {
         String first = FileTurnReplyPolicy.appendFocus("", "Какво мислиш за", false);
         String complete = FileTurnReplyPolicy.appendFocus(first, "това предложение?", false);

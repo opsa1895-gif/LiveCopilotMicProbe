@@ -10,6 +10,10 @@ final class FileTurnReplyPolicy {
         return endSerial > 0L && endSerial == activeTurnSerial;
     }
 
+    static boolean shouldUseSemanticFallback(boolean mainReplyQueued, String turnFocus) {
+        return !mainReplyQueued && !clean(turnFocus).isEmpty();
+    }
+
     static String appendFocus(String current, String novel, boolean topicShift) {
         String before = clean(current);
         String addition = clean(novel);
