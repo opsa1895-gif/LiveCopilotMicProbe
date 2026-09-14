@@ -1,5 +1,6 @@
 name: Apply v0.58 latest file STT queue
 
+# Retry after reusing the existing LatestWinsExecutor test suite.
 on:
   push:
     branches: [v0-58-latest-file-stt-queue]
