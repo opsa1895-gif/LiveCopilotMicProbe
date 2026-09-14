@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 48
-        versionName = "0.47.0-new-speech-invalidation"
+        versionCode = 49
+        versionName = "0.48.0-contiguous-fallback-audio"
     }
 
     compileOptions {
