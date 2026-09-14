@@ -10,12 +10,81 @@ final class SelfEchoFilter {
     private SelfEchoFilter() {}
 
     static boolean matchesAny(String transcript, String... candidates) {
-        String heard = normalize(transcript);
-        if (heard.isEmpty() || candidates == null) return false;
+        String filtered = removeEchoPrefix(transcript, candidates);
+        return !clean(transcript).isEmpty() && filtered.isEmpty();
+    }
+
+    /**
+     * Returns the useful non-echo content. A pure recent suggestion repeat becomes an empty string.
+     * If the host repeats the suggestion and immediately adds new speech, only that novel tail is kept.
+     * A non-echo utterance is returned cleaned but otherwise intact.
+     */
+    static String removeEchoPrefix(String transcript, String... candidates) {
+        String original = clean(transcript);
+        String heard = normalize(original);
+        if (heard.isEmpty()) return "";
+        if (candidates == null) return original;
+
         for (String candidate : candidates) {
-            if (matchesNormalized(heard, normalize(candidate))) return true;
+            String suggested = normalize(candidate);
+            if (suggested.isEmpty()) continue;
+
+            String tail = meaningfulTailAfterSuggestion(heard, suggested);
+            if (tail != null) return tail;
+
+            if (matchesNormalized(heard, suggested)) return "";
         }
+        return original;
+    }
+
+    private static String meaningfulTailAfterSuggestion(String heard, String suggested) {
+        List<String> heardWords = words(heard);
+        List<String> suggestedWords = words(suggested);
+        if (heardWords.size() < 4 || suggestedWords.size() < 3) return null;
+
+        int consumed = matchedSuggestionPrefixLength(heardWords, suggestedWords);
+        if (consumed <= 0 || consumed >= heardWords.size()) return null;
+
+        List<String> tailWords = heardWords.subList(consumed, heardWords.size());
+        if (!isMeaningfulNovelTail(tailWords)) return null;
+        return join(tailWords);
+    }
+
+    private static int matchedSuggestionPrefixLength(List<String> heard, List<String> suggested) {
+        int candidateSize = suggested.size();
+        if (heard.size() < Math.min(3, candidateSize)) return 0;
+
+        int direct = 0;
+        int limit = Math.min(heard.size(), candidateSize);
+        while (direct < limit && heard.get(direct).equals(suggested.get(direct))) direct++;
+        if (direct == candidateSize) return candidateSize;
+
+        // Allow one small STT mismatch while the host is clearly repeating the beginning of the suggestion.
+        int compare = Math.min(candidateSize, heard.size());
+        int samePosition = 0;
+        for (int i = 0; i < compare; i++) {
+            if (heard.get(i).equals(suggested.get(i))) samePosition++;
+        }
+        int required = Math.max(3, (int) Math.ceil(candidateSize * 0.80));
+        if (samePosition >= required && heard.size() > candidateSize) return candidateSize;
+        return 0;
+    }
+
+    private static boolean isMeaningfulNovelTail(List<String> tail) {
+        if (tail == null || tail.isEmpty()) return false;
+        if (tail.size() >= 3) return true;
+
+        String first = tail.get(0);
+        if (isQuestionStarter(first)) return true;
+        if (first.equals("а") && tail.size() >= 2 && isQuestionStarter(tail.get(1))) return true;
         return false;
+    }
+
+    private static boolean isQuestionStarter(String word) {
+        return word.equals("как") || word.equals("какво") || word.equals("защо")
+                || word.equals("кой") || word.equals("коя") || word.equals("кое") || word.equals("кои")
+                || word.equals("къде") || word.equals("кога") || word.equals("колко")
+                || word.equals("откъде") || word.equals("дали");
     }
 
     private static boolean matchesNormalized(String heard, String suggested) {
@@ -43,6 +112,15 @@ final class SelfEchoFilter {
         return common >= 3 && coverageOfShorter >= 0.78 && coverageOfLonger >= 0.55;
     }
 
+    private static String join(List<String> value) {
+        StringBuilder out = new StringBuilder();
+        for (String word : value) {
+            if (out.length() > 0) out.append(' ');
+            out.append(word);
+        }
+        return out.toString();
+    }
+
     private static List<String> words(String value) {
         List<String> out = new ArrayList<>();
         if (value == null || value.isEmpty()) return out;
@@ -52,9 +130,13 @@ final class SelfEchoFilter {
         return out;
     }
 
-    private static String normalize(String value) {
+    private static String clean(String value) {
         if (value == null) return "";
-        return value.toLowerCase(Locale.ROOT)
+        return value.replace('\n', ' ').replace('\r', ' ').replaceAll("\\s+", " ").trim();
+    }
+
+    private static String normalize(String value) {
+        return clean(value).toLowerCase(Locale.ROOT)
                 .replaceAll("[^\\p{L}\\p{N} ]", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
