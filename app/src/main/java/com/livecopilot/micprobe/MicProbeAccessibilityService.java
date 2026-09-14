@@ -63,6 +63,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private boolean debugVisible;
     private boolean hasStartedSession;
     private volatile boolean realtimeTurnActive;
+    private volatile boolean realtimeBackupStreaming;
     private short[] fallbackTurnAudio;
     private int fallbackTurnSampleRate = 16_000;
     private long lastRealtimeTurnSerial;
@@ -192,11 +193,18 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         if (realtimeTranscriber != null) realtimeTranscriber.noteNewSpeech();
         realtimeTurnActive = realtimeTranscriber != null && realtimeTranscriber.beginTurn(sampleRate);
+        // Only turns that actually entered Realtime need a contiguous emergency
+        // backup. Pure file-fallback turns keep using the chunk/overlap path.
+        realtimeBackupStreaming = realtimeTurnActive;
         renderDebug();
     }
 
     @Override
     public void onPcmStream(short[] samples, int sampleRate) {
+        // Capture the exact stream once, without the engine's forced-split overlap.
+        // If Realtime dies mid-turn we keep buffering the rest for one clean file STT.
+        if (realtimeBackupStreaming) appendFallbackTurnAudio(samples, sampleRate);
+
         if (!realtimeTurnActive || realtimeTranscriber == null) return;
         if (!realtimeTranscriber.append(samples, sampleRate)) {
             realtimeTurnActive = false;
@@ -205,12 +213,16 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onStreamTurnEnd() {
-        if (!realtimeTurnActive || realtimeTranscriber == null) {
-            realtimeTurnActive = false;
-            return;
-        }
-        boolean committed = realtimeTranscriber.commitTurn();
+        boolean hadRealtimeBackup = realtimeBackupStreaming;
+        boolean committed = hadRealtimeBackup
+                && realtimeTurnActive
+                && realtimeTranscriber != null
+                && realtimeTranscriber.commitTurn();
+
         realtimeTurnActive = false;
+        realtimeBackupStreaming = false;
+        if (!hadRealtimeBackup) return;
+
         if (!committed) submitBufferedFallback();
         else clearFallbackTurnAudio();
     }
@@ -219,10 +231,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     public void onPcmChunk(short[] samples, int sampleRate) {
         if (aiClient == null || engine == null || !engine.isRunning()) return;
 
-        if (realtimeTurnActive) {
-            appendFallbackTurnAudio(samples, sampleRate);
-            return;
-        }
+        // A Realtime-started turn is already backed up continuously by
+        // onPcmStream(). Ignoring overlap chunks here prevents repeated audio.
+        if (realtimeBackupStreaming) return;
 
         short[] candidate = takeFallbackPlus(samples, sampleRate);
         short[] prepared = AudioPreprocessor.prepare(candidate, sampleRate);
@@ -633,6 +644,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             semanticPrimaryAppliedAtMs = 0L;
             pendingSemanticFocus = "";
             realtimeTurnActive = false;
+            realtimeBackupStreaming = false;
             clearFallbackTurnAudio();
             aiStatus = "Пауза";
             renderStatus();
