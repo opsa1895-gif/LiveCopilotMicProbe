@@ -97,6 +97,7 @@ final class OpenAiCopilotClient {
     private final LatestWinsExecutor replyExecutor = new LatestWinsExecutor(2);
     private final ExecutorService variantExecutor = Executors.newSingleThreadExecutor();
     private final HttpConnectionRegistry replyHttp = new HttpConnectionRegistry();
+    private final HttpConnectionRegistry audioHttp = new HttpConnectionRegistry();
     private final Deque<AudioItem> audioQueue = new ArrayDeque<>();
     private final Deque<String> recentTurns = new ArrayDeque<>();
 
@@ -121,6 +122,7 @@ final class OpenAiCopilotClient {
 
     synchronized void resetSession() {
         sessionSerial++;
+        audioHttp.cancelAll();
         replyHttp.cancelAll();
         latestInputSerial = 0L;
         latestReplySerial++;
@@ -142,6 +144,7 @@ final class OpenAiCopilotClient {
         // rather than waiting for its final transcript.
         latestInputSerial++;
         latestReplySerial++;
+        audioHttp.cancelAll();
         replyHttp.cancelAll();
     }
 
@@ -151,6 +154,7 @@ final class OpenAiCopilotClient {
         // queued/in-flight file STT and reply callback from before the pause stale.
         latestInputSerial++;
         latestReplySerial++;
+        audioHttp.cancelAll();
         replyHttp.cancelAll();
         audioQueue.clear();
     }
@@ -178,6 +182,7 @@ final class OpenAiCopilotClient {
             // and file-reply job stale for the live overlay.
             latestInputSerial++;
             latestReplySerial++;
+            audioHttp.cancelAll();
             replyHttp.cancelAll();
             if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
         }
@@ -218,8 +223,10 @@ final class OpenAiCopilotClient {
         if (closed || samples == null || samples.length == 0) return;
         long now = System.currentTimeMillis();
         long inputSerial = ++latestInputSerial;
-        // New speech immediately invalidates reply work from older file audio.
+        // New file audio supersedes any older in-flight transcription as well as
+        // reply work derived from older audio.
         latestReplySerial++;
+        audioHttp.cancelAll();
         replyHttp.cancelAll();
         while (!audioQueue.isEmpty() && now - audioQueue.peekFirst().createdAtMs > MAX_AUDIO_AGE_MS) {
             audioQueue.removeFirst();
@@ -257,7 +264,7 @@ final class OpenAiCopilotClient {
 
         try {
             listener.onStatus(item.sessionSerial, item.inputSerial, false, "Разпознавам…");
-            String raw = transcribe(key, item.samples, item.sampleRate);
+            String raw = transcribe(key, item);
             if (!isCurrentSession(item.sessionSerial)) return;
             if (TranscriptQualityPolicy.isLowQuality(raw)) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
@@ -314,7 +321,9 @@ final class OpenAiCopilotClient {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
             }
         } catch (Throwable ignored) {
-            if (isCurrentSession(item.sessionSerial)) {
+            // Cancellation caused by newer speech is expected and must not surface
+            // as a connection error for the obsolete audio item.
+            if (shouldSurfaceAudioResult(item)) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "AI връзката прекъсна");
             }
         }
@@ -508,6 +517,7 @@ final class OpenAiCopilotClient {
             latestReplySerial++;
             audioQueue.clear();
             }
+        audioHttp.cancelAll();
         replyHttp.cancelAll();
         audioExecutor.shutdownNow();
         replyExecutor.shutdownNow();
@@ -546,40 +556,68 @@ final class OpenAiCopilotClient {
         return shorten(p.toString(), 650);
     }
 
-    private String transcribe(String key, short[] samples, int sampleRate) throws Exception {
-        byte[] wav = wav(samples, sampleRate);
+    private String transcribe(String key, AudioItem item) throws Exception {
+        byte[] wav = wav(item.samples, item.sampleRate);
         Exception last = null;
         for (int attempt = 0; attempt < 2; attempt++) {
             try {
-                HttpResult r = transcriptionRequest(key, wav);
+                if (!shouldSurfaceAudioResult(item)) {
+                    throw new java.io.InterruptedIOException("stale transcription");
+                }
+                HttpResult r = transcriptionRequest(key, wav, item);
                 if (r.code >= 200 && r.code < 300) return clean(new JSONObject(r.body).optString("text", ""));
                 if (r.code != 429 && r.code < 500) throw new IllegalStateException("STT " + r.code);
                 last = new IllegalStateException("STT " + r.code);
             } catch (Exception e) {
                 last = e;
+                // A newer utterance cancelled this request. Never retry stale audio,
+                // otherwise the single-thread worker can still be blocked by obsolete STT.
+                if (!shouldSurfaceAudioResult(item)) throw e;
             }
-            if (attempt == 0) Thread.sleep(500L);
+            if (attempt == 0) {
+                if (!shouldSurfaceAudioResult(item)) {
+                    throw new java.io.InterruptedIOException("stale transcription");
+                }
+                Thread.sleep(500L);
+            }
         }
         throw last == null ? new IllegalStateException("STT") : last;
     }
 
-    private HttpResult transcriptionRequest(String key, byte[] wav) throws Exception {
+    private HttpResult transcriptionRequest(String key, byte[] wav, AudioItem item) throws Exception {
         String boundary = "----LiveCopilot" + System.nanoTime();
-        HttpURLConnection c = connection("https://api.openai.com/v1/audio/transcriptions", key, 40_000);
-        c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-        try (DataOutputStream out = new DataOutputStream(c.getOutputStream())) {
-            field(out, boundary, "model", "gpt-transcribe");
-            field(out, boundary, "language", "bg");
-            field(out, boundary, "prompt", transcriptionPrompt());
-            field(out, boundary, "response_format", "json");
-            out.writeBytes("--" + boundary + "\r\n");
-            out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"live.wav\"\r\n");
-            out.writeBytes("Content-Type: audio/wav\r\n\r\n");
-            out.write(wav);
-            out.writeBytes("\r\n--" + boundary + "--\r\n");
+        HttpURLConnection c = null;
+        try {
+            if (!shouldSurfaceAudioResult(item)) {
+                throw new java.io.InterruptedIOException("stale transcription");
+            }
+            c = connection("https://api.openai.com/v1/audio/transcriptions", key, 40_000);
+            c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+            audioHttp.register(c);
+            // Covers invalidation after the preflight but before registration became
+            // visible to cancelAll().
+            if (!shouldSurfaceAudioResult(item)) {
+                throw new java.io.InterruptedIOException("stale transcription");
+            }
+            try (DataOutputStream out = new DataOutputStream(c.getOutputStream())) {
+                field(out, boundary, "model", "gpt-transcribe");
+                field(out, boundary, "language", "bg");
+                field(out, boundary, "prompt", transcriptionPrompt());
+                field(out, boundary, "response_format", "json");
+                out.writeBytes("--" + boundary + "\r\n");
+                out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"live.wav\"\r\n");
+                out.writeBytes("Content-Type: audio/wav\r\n\r\n");
+                out.write(wav);
+                out.writeBytes("\r\n--" + boundary + "--\r\n");
+            }
+            int code = c.getResponseCode();
+            return new HttpResult(code, read(c, code));
+        } finally {
+            if (c != null) {
+                audioHttp.unregister(c);
+                try { c.disconnect(); } catch (Throwable ignored) {}
+            }
         }
-        int code = c.getResponseCode();
-        return new HttpResult(code, read(c, code));
     }
 
     private String primaryReply(String key, String fullContext, String focus,

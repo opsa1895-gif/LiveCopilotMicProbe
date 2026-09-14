@@ -42,4 +42,11 @@ public class FileSttFreshnessPolicyTest {
         assertFalse(FileSttFreshnessPolicy.shouldAccept(itemSerial, itemSerial + 1L, 251L, true));
         assertFalse(FileSttFreshnessPolicy.shouldSurface(itemSerial, itemSerial + 1L, 251L, true));
     }
+
+    @Test
+    public void networkRetryGateRejectsSupersededAudio() {
+        long itemSerial = 12L;
+        assertTrue(FileSttFreshnessPolicy.shouldAccept(itemSerial, itemSerial, 400L, true));
+        assertFalse(FileSttFreshnessPolicy.shouldAccept(itemSerial, itemSerial + 1L, 401L, true));
+    }
 }
