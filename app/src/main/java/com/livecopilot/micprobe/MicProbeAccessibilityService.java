@@ -64,7 +64,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private boolean hasStartedSession;
     private volatile boolean realtimeTurnActive;
     private volatile boolean realtimeBackupStreaming;
-    private short[] fallbackTurnAudio;
+    private final PcmTurnBuffer fallbackTurnAudio = new PcmTurnBuffer(MAX_FALLBACK_AUDIO_SAMPLES);
     private int fallbackTurnSampleRate = 16_000;
     private long lastRealtimeTurnSerial;
     private long lastFileTranscriptAtMs;
@@ -776,47 +776,38 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     private synchronized void appendFallbackTurnAudio(short[] samples, int sampleRate) {
         if (samples == null || samples.length == 0) return;
+        if (fallbackTurnAudio.size() > 0 && fallbackTurnSampleRate != sampleRate) {
+            fallbackTurnAudio.clear();
+        }
         fallbackTurnSampleRate = sampleRate;
-        if (fallbackTurnAudio == null || fallbackTurnAudio.length == 0) {
-            fallbackTurnAudio = samples.clone();
-            return;
-        }
-        int total = Math.min(MAX_FALLBACK_AUDIO_SAMPLES, fallbackTurnAudio.length + samples.length);
-        short[] next = new short[total];
-        int keepOld = Math.min(fallbackTurnAudio.length, Math.max(0, total - samples.length));
-        if (keepOld > 0) {
-            System.arraycopy(fallbackTurnAudio, fallbackTurnAudio.length - keepOld, next, 0, keepOld);
-        }
-        int copyNew = Math.min(samples.length, total - keepOld);
-        System.arraycopy(samples, samples.length - copyNew, next, keepOld, copyNew);
-        fallbackTurnAudio = next;
+        fallbackTurnAudio.append(samples);
     }
 
     private synchronized short[] takeFallbackPlus(short[] samples, int sampleRate) {
-        if (fallbackTurnAudio == null || fallbackTurnAudio.length == 0 || fallbackTurnSampleRate != sampleRate) {
+        if (fallbackTurnAudio.size() == 0 || fallbackTurnSampleRate != sampleRate) {
             clearFallbackTurnAudio();
             return samples == null ? new short[0] : samples;
         }
         appendFallbackTurnAudio(samples, sampleRate);
-        short[] out = fallbackTurnAudio;
-        fallbackTurnAudio = null;
-        return out == null ? new short[0] : out;
+        short[] out = fallbackTurnAudio.copy();
+        fallbackTurnAudio.clear();
+        return out;
     }
 
     private synchronized void submitBufferedFallback() {
-        if (aiClient == null || fallbackTurnAudio == null || fallbackTurnAudio.length == 0) {
+        if (aiClient == null || fallbackTurnAudio.size() == 0) {
             clearFallbackTurnAudio();
             return;
         }
-        short[] audio = fallbackTurnAudio;
+        short[] audio = fallbackTurnAudio.copy();
         int rate = fallbackTurnSampleRate;
-        fallbackTurnAudio = null;
+        fallbackTurnAudio.clear();
         short[] prepared = AudioPreprocessor.prepare(audio, rate);
         if (prepared.length > 0) aiClient.submitAudio(prepared, rate);
     }
 
     private synchronized void clearFallbackTurnAudio() {
-        fallbackTurnAudio = null;
+        fallbackTurnAudio.clear();
         fallbackTurnSampleRate = 16_000;
     }
 
