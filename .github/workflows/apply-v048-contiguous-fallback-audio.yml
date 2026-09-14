@@ -1,0 +1,30 @@
+name: Apply v0.48 contiguous fallback audio
+
+on:
+  push:
+    branches:
+      - copilot-v0-48-contiguous-fallback-audio
+    paths:
+      - .github/scripts/apply_v048.py
+      - .github/workflows/apply-v048-contiguous-fallback-audio.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: copilot-v0-48-contiguous-fallback-audio
+      - name: Apply guarded source patch
+        run: python .github/scripts/apply_v048.py
+      - name: Commit patched sources
+        run: |
+          git config user.name "opsa1895-gif"
+          git config user.email "opsa1895@gmail.com"
+          git add app/build.gradle.kts app/src/main/java/com/livecopilot/micprobe/MicProbeAccessibilityService.java
+          git diff --cached --quiet && exit 1
+          git commit -m "fix: keep contiguous realtime fallback audio"
+          git push origin HEAD:copilot-v0-48-contiguous-fallback-audio
