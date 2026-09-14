@@ -38,40 +38,41 @@ jobs:
               '    private final ExecutorService replyExecutor = Executors.newSingleThreadExecutor();\n',
               '    private final LatestWinsExecutor replyExecutor = new LatestWinsExecutor(2);\n')
 
-          old_queue = '''    private void queueReply(String focus, boolean engagement) {
-        synchronized (this) {
-            long serial = ++latestReplySerial;
-            pendingReply = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);
-            if (replyWorkerRunning) return;
-            replyWorkerRunning = true;
-        }
-        replyExecutor.execute(this::drainReplies);
-    }
-
-    private void drainReplies() {
-        while (true) {
-            ReplyJob job;
-            synchronized (this) {
-                job = pendingReply;
-                pendingReply = null;
-                if (job == null || closed) {
-                    replyWorkerRunning = false;
-                    return;
-                }
-            }
-            processReply(job);
-        }
-    }
-'''
-          new_queue = '''    private void queueReply(String focus, boolean engagement) {
-        ReplyJob job;
-        synchronized (this) {
-            long serial = ++latestReplySerial;
-            job = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);
-        }
-        replyExecutor.execute(() -> processReply(job));
-    }
-'''
+          old_queue = (
+              '    private void queueReply(String focus, boolean engagement) {\n'
+              '        synchronized (this) {\n'
+              '            long serial = ++latestReplySerial;\n'
+              '            pendingReply = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);\n'
+              '            if (replyWorkerRunning) return;\n'
+              '            replyWorkerRunning = true;\n'
+              '        }\n'
+              '        replyExecutor.execute(this::drainReplies);\n'
+              '    }\n\n'
+              '    private void drainReplies() {\n'
+              '        while (true) {\n'
+              '            ReplyJob job;\n'
+              '            synchronized (this) {\n'
+              '                job = pendingReply;\n'
+              '                pendingReply = null;\n'
+              '                if (job == null || closed) {\n'
+              '                    replyWorkerRunning = false;\n'
+              '                    return;\n'
+              '                }\n'
+              '            }\n'
+              '            processReply(job);\n'
+              '        }\n'
+              '    }\n'
+          )
+          new_queue = (
+              '    private void queueReply(String focus, boolean engagement) {\n'
+              '        ReplyJob job;\n'
+              '        synchronized (this) {\n'
+              '            long serial = ++latestReplySerial;\n'
+              '            job = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);\n'
+              '        }\n'
+              '        replyExecutor.execute(() -> processReply(job));\n'
+              '    }\n'
+          )
           replace_exact(client, old_queue, new_queue)
 
           replace_exact(client, '    private boolean replyWorkerRunning;\n', '')
