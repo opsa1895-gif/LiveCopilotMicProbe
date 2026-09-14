@@ -49,7 +49,7 @@ public class SelfEchoFilterTest {
         String heard = "Да, цената е тази която виждаш на екрана, а колко струва доставката?";
 
         assertFalse(SelfEchoFilter.matchesAny(heard, suggestion));
-        assertEquals("а колко струва доставката", SelfEchoFilter.removeEchoPrefix(heard, suggestion));
+        assertEquals("а колко струва доставката?", SelfEchoFilter.removeEchoPrefix(heard, suggestion));
     }
 
     @Test
@@ -59,6 +59,14 @@ public class SelfEchoFilterTest {
 
         assertFalse(SelfEchoFilter.matchesAny(heard, suggestion));
         assertEquals("и после ще покажем другия модел", SelfEchoFilter.removeEchoPrefix(heard, suggestion));
+    }
+
+    @Test
+    public void novelTailPreservesOriginalCaseNamesAndPunctuation() {
+        String suggestion = "Добре, нека продължим с темата.";
+        String heard = "Добре нека продължим с темата. А Ива ще дойде ли утре?";
+
+        assertEquals("А Ива ще дойде ли утре?", SelfEchoFilter.removeEchoPrefix(heard, suggestion));
     }
 
     @Test
