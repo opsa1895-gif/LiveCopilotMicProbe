@@ -38,7 +38,6 @@ final class RealtimeTranscriptionClient {
     private static final int MAX_BACKUP_SAMPLES = 16_000 * 12; // bounded ~12 s at capture rate
     private static final int STT_CONTEXT_TURNS = 4;
     private static final long STT_CONTEXT_IDLE_RESET_MS = 45_000L;
-    private static final long COMMIT_TIMEOUT_MS = 9_000L;
 
     private final Context context;
     private final Listener listener;
@@ -193,8 +192,8 @@ final class RealtimeTranscriptionClient {
 
         long timeoutTurn = committedTurnSerial;
         long timeoutGeneration = generation;
-        scheduler.schedule(() -> handleCommitTimeout(timeoutTurn, timeoutGeneration),
-                COMMIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        scheduler.schedule(() -> handleCommitTimeout(timeoutTurn, timeoutGeneration, false),
+                RealtimeCommitPolicy.SOFT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
         return true;
     }
 
@@ -360,18 +359,25 @@ final class RealtimeTranscriptionClient {
         scheduleReconnect();
     }
 
-    private void handleCommitTimeout(long turn, long timeoutGeneration) {
+    private void handleCommitTimeout(long turn, long timeoutGeneration, boolean finalDeadline) {
         WebSocket old;
         synchronized (this) {
             if (closed || !wanted || generation != timeoutGeneration) return;
             if (!awaitingCompletion || committedTurnSerial != turn) return;
+            if (RealtimeCommitPolicy.grantPartialGrace(finalDeadline, partial.length() > 0)) {
+                scheduler.schedule(() -> handleCommitTimeout(turn, timeoutGeneration, true),
+                        RealtimeCommitPolicy.PARTIAL_GRACE_MS, TimeUnit.MILLISECONDS);
+                return;
+            }
             awaitingCompletion = false;
             ready = false;
             turnActive = false;
+            partial.setLength(0);
             old = socket;
             socket = null;
         }
 
+        listener.onPartial("");
         listener.onState("fallback");
         if (old != null) {
             try { old.close(1011, "transcription_timeout"); } catch (Throwable ignored) {}
@@ -488,7 +494,21 @@ final class RealtimeTranscriptionClient {
             ws = socket;
             update = sessionUpdate();
         }
-        try { ws.send(update.toString()); } catch (Throwable ignored) {}
+        boolean sent;
+        try { sent = ws.send(update.toString()); }
+        catch (Throwable ignored) { sent = false; }
+        if (sent) return;
+
+        synchronized (this) {
+            if (ws != socket || closed || !wanted) return;
+            socket = null;
+            ready = false;
+            turnActive = false;
+            awaitingCompletion = false;
+        }
+        listener.onState("fallback");
+        try { ws.close(1011, "context_update_failed"); } catch (Throwable ignored) {}
+        scheduleReconnect();
     }
 
     private synchronized void scheduleReconnect() {
