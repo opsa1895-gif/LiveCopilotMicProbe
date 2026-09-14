@@ -26,8 +26,8 @@ import okhttp3.WebSocketListener;
 final class RealtimeTranscriptionClient {
     interface Listener {
         void onState(String state);
-        void onPartial(String partial);
-        void onFinal(long turnSerial, String transcript);
+        void onPartial(long speechEpoch, String partial);
+        void onFinal(long turnSerial, long speechEpoch, String transcript);
     }
 
     private static final String WS_URL = "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe";
@@ -111,9 +111,10 @@ final class RealtimeTranscriptionClient {
         listener.onState("off");
     }
 
-    synchronized void noteNewSpeech() {
+    synchronized long noteNewSpeech() {
         speechEpoch++;
         latestRecoveryId++;
+        return speechEpoch;
     }
 
     synchronized boolean beginTurn(int sourceSampleRate) {
@@ -173,7 +174,7 @@ final class RealtimeTranscriptionClient {
             sentSamples = 0;
             activeBackup.clear();
             partial.setLength(0);
-            listener.onPartial("");
+            listener.onPartial(speechEpoch, "");
             if (clearFailed) {
                 failedSocket = socket;
                 socket = null;
@@ -293,22 +294,26 @@ final class RealtimeTranscriptionClient {
         if ("conversation.item.input_audio_transcription.delta".equals(type)) {
             String delta = event.optString("delta", "");
             String snapshot;
+            long eventSpeechEpoch;
             synchronized (this) {
                 if (ws != socket || (!turnActive && !awaitingCompletion) || delta.isEmpty()) return;
+                eventSpeechEpoch = turnActive ? speechEpoch : committedSpeechEpoch;
                 partial.append(delta);
                 snapshot = partial.toString();
             }
-            listener.onPartial(snapshot);
+            listener.onPartial(eventSpeechEpoch, snapshot);
             return;
         }
 
         if ("conversation.item.input_audio_transcription.completed".equals(type)) {
             String transcript = clean(event.optString("transcript", ""));
             long turn;
+            long completedSpeechEpoch;
             long fallbackGeneration = -1L;
             synchronized (this) {
                 if (ws != socket || !awaitingCompletion) return;
                 turn = committedTurnSerial;
+                completedSpeechEpoch = committedSpeechEpoch;
                 awaitingCompletion = false;
                 partial.setLength(0);
                 reconnectAttempt = 0;
@@ -319,7 +324,7 @@ final class RealtimeTranscriptionClient {
                 }
             }
             if (!transcript.isEmpty()) {
-                listener.onFinal(turn, transcript);
+                listener.onFinal(turn, completedSpeechEpoch, transcript);
             } else {
                 recoverCommittedTurn(turn, fallbackGeneration, "empty");
             }
@@ -391,6 +396,7 @@ final class RealtimeTranscriptionClient {
 
     private void handleCommitTimeout(long turn, long timeoutGeneration, boolean finalDeadline) {
         WebSocket old;
+        long timeoutSpeechEpoch;
         synchronized (this) {
             if (closed || !wanted || generation != timeoutGeneration) return;
             if (!awaitingCompletion || committedTurnSerial != turn) return;
@@ -403,11 +409,12 @@ final class RealtimeTranscriptionClient {
             ready = false;
             turnActive = false;
             partial.setLength(0);
+            timeoutSpeechEpoch = committedSpeechEpoch;
             old = socket;
             socket = null;
         }
 
-        listener.onPartial("");
+        listener.onPartial(timeoutSpeechEpoch, "");
         listener.onState("fallback");
         if (old != null) {
             try { old.close(1011, "transcription_timeout"); } catch (Throwable ignored) {}
@@ -420,6 +427,7 @@ final class RealtimeTranscriptionClient {
         final short[] audio;
         final int sampleRate;
         final long recoveryId;
+        final long recoverySpeechEpoch;
         final long queuedAtMs = System.currentTimeMillis();
         synchronized (this) {
             if (turn <= 0L || pendingBackupTurnSerial != turn || pendingBackup.size() == 0) return;
@@ -429,6 +437,7 @@ final class RealtimeTranscriptionClient {
             }
             audio = pendingBackup.copy();
             sampleRate = pendingBackupSampleRate;
+            recoverySpeechEpoch = committedSpeechEpoch;
             recoveryId = ++latestRecoveryId;
             clearPendingBackupLocked(turn);
         }
@@ -446,7 +455,7 @@ final class RealtimeTranscriptionClient {
             if (!shouldDeliverRecovery(recoveryId, recoveryGeneration, queuedAtMs)) return;
 
             if (!transcript.isEmpty()) {
-                listener.onFinal(turn, transcript);
+                listener.onFinal(turn, recoverySpeechEpoch, transcript);
             } else {
                 listener.onState("fallback_failed");
             }
