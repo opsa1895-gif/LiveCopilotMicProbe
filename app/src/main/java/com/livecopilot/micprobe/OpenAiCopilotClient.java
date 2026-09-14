@@ -127,9 +127,6 @@ final class OpenAiCopilotClient {
     private static final long ENGAGEMENT_GAP_MS = 12_000L;
     private static final long MAX_REPLY_AGE_MS = 12_000L;
     private static final long SELF_ECHO_WINDOW_MS = 12_000L;
-    // Absolute from chunk submission, so ordered waits cannot stack this delay
-    // once per chunk at the end of a long speech turn.
-    private static final long FILE_STT_COMMIT_DEADLINE_MS = 8_000L;
     private static final int PRIMARY_CONNECT_TIMEOUT_MS = 5_000;
     private static final int PRIMARY_READ_TIMEOUT_MS = 8_000;
     private static final int STYLE_CONNECT_TIMEOUT_MS = 8_000;
@@ -151,6 +148,8 @@ final class OpenAiCopilotClient {
     private long latestReplySerial;
     private long fileTurnSerial = -1L;
     private String fileTurnFocus = "";
+    private long fileSttCommitDeadlineMs = AdaptiveFileSttDeadlinePolicy.initialDeadlineMs();
+    private boolean fileTurnHadSttTimeout;
     private long lastReplyAtMs;
     private long firstSpeechAtMs;
     private long lastTranscriptAtMs;
@@ -174,6 +173,8 @@ final class OpenAiCopilotClient {
         latestReplySerial++;
         fileTurnSerial = -1L;
         fileTurnFocus = "";
+        fileSttCommitDeadlineMs = AdaptiveFileSttDeadlinePolicy.initialDeadlineMs();
+        fileTurnHadSttTimeout = false;
         recentTurns.clear();
         summary = "";
         lastDirectReply = "";
@@ -194,6 +195,7 @@ final class OpenAiCopilotClient {
         latestReplySerial++;
         fileTurnSerial = latestInputSerial;
         fileTurnFocus = "";
+        fileTurnHadSttTimeout = false;
         audioExecutor.cancelPending();
         audioHttp.cancelAll();
         replyHttp.cancelAll();
@@ -208,6 +210,7 @@ final class OpenAiCopilotClient {
         latestReplySerial++;
         fileTurnSerial = -1L;
         fileTurnFocus = "";
+        fileTurnHadSttTimeout = false;
         audioExecutor.cancelPending();
         audioHttp.cancelAll();
         replyHttp.cancelAll();
@@ -238,6 +241,7 @@ final class OpenAiCopilotClient {
             latestReplySerial++;
             fileTurnSerial = -1L;
             fileTurnFocus = "";
+            fileTurnHadSttTimeout = false;
             audioExecutor.cancelPending();
             audioHttp.cancelAll();
             replyHttp.cancelAll();
@@ -284,6 +288,7 @@ final class OpenAiCopilotClient {
         latestReplySerial++;
         replyHttp.cancelAll();
         AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);
+        long deadlineMs = fileSttCommitDeadlineMs;
         audioExecutor.submit(
                 () -> transcribeAudioIfFresh(item),
                 (raw, error) -> {
@@ -291,12 +296,19 @@ final class OpenAiCopilotClient {
                         // Drop only the overdue chunk. Later same-turn chunks can
                         // still commit in order and feed the final turn reply.
                         item.cancel();
+                        noteFileSttTimeout(item);
                         listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                         return;
                     }
                     processAudioResult(item, raw, error);
                 },
-                FILE_STT_COMMIT_DEADLINE_MS);
+                deadlineMs);
+    }
+
+    private synchronized void noteFileSttTimeout(AudioItem item) {
+        if (item == null || closed) return;
+        if (item.sessionSerial != sessionSerial || item.inputSerial != latestInputSerial) return;
+        fileTurnHadSttTimeout = true;
     }
 
     synchronized void finishAudioTurn(long inputSerial) {
@@ -384,6 +396,11 @@ final class OpenAiCopilotClient {
                     || closed
                     || end.sessionSerial != sessionSerial
                     || end.inputSerial != latestInputSerial) return;
+
+            long drainLatencyMs = Math.max(0L, now - end.createdAtMs);
+            fileSttCommitDeadlineMs = AdaptiveFileSttDeadlinePolicy.nextDeadlineMs(
+                    fileSttCommitDeadlineMs, drainLatencyMs, fileTurnHadSttTimeout);
+            fileTurnHadSttTimeout = false;
 
             turnFocus = fileTurnFocus;
             fileTurnSerial = -1L;
