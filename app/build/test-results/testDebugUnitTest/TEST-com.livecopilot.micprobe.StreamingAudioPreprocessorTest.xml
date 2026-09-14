@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.livecopilot.micprobe.StreamingAudioPreprocessorTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-09-14T19:11:26.721Z" hostname="runnervmlun5p" time="0.005">
+  <properties/>
+  <testcase name="filterStateSuppressesDcAcrossConsecutiveFrames" classname="com.livecopilot.micprobe.StreamingAudioPreprocessorTest" time="0.002"/>
+  <testcase name="loudFramePullsGainDownQuicklyWithoutClipping" classname="com.livecopilot.micprobe.StreamingAudioPreprocessorTest" time="0.001"/>
+  <testcase name="sampleRateChangeResetsSafely" classname="com.livecopilot.micprobe.StreamingAudioPreprocessorTest" time="0.0"/>
+  <testcase name="quietSpeechGainBuildsAcrossFrames" classname="com.livecopilot.micprobe.StreamingAudioPreprocessorTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

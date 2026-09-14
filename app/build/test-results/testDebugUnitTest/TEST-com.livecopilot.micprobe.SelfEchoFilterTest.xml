@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.livecopilot.micprobe.SelfEchoFilterTest" tests="9" skipped="0" failures="0" errors="0" timestamp="2026-09-14T19:11:26.687Z" hostname="runnervmlun5p" time="0.018">
+  <properties/>
+  <testcase name="differentQuestionIsNotEcho" classname="com.livecopilot.micprobe.SelfEchoFilterTest" time="0.006"/>
+  <testcase name="punctuationAndCaseDoNotMatter" classname="com.livecopilot.micprobe.SelfEchoFilterTest" time="0.0"/>
+  <testcase name="exactSuggestionIsEcho" classname="com.livecopilot.micprobe.SelfEchoFilterTest" time="0.001"/>
+  <testcase name="tinyGenericPhraseIsNotEnough" classname="com.livecopilot.micprobe.SelfEchoFilterTest" time="0.001"/>
+  <testcase name="repeatedSuggestionPlusNewQuestionKeepsQuestion" classname="com.livecopilot.micprobe.SelfEchoFilterTest" time="0.004"/>
+  <testcase name="strongPartialRepeatIsEcho" classname="com.livecopilot.micprobe.SelfEchoFilterTest" time="0.0"/>
+  <testcase name="repeatedSuggestionPlusLongNovelTailKeepsTail" classname="com.livecopilot.micprobe.SelfEchoFilterTest" time="0.002"/>
+  <testcase name="shortFillerAfterSuggestionStillCountsAsEcho" classname="com.livecopilot.micprobe.SelfEchoFilterTest" time="0.003"/>
+  <testcase name="novelTailPreservesOriginalCaseNamesAndPunctuation" classname="com.livecopilot.micprobe.SelfEchoFilterTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

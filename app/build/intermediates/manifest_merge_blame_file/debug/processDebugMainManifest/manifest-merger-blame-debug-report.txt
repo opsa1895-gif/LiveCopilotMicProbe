@@ -1,0 +1,88 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.livecopilot.micprobe"
+4    android:versionCode="53"
+5    android:versionName="0.52.0-file-callback-freshness" >
+6
+7    <uses-sdk
+7-->INJECTED
+8        android:minSdkVersion="29"
+8-->INJECTED
+9        android:targetSdkVersion="36" />
+9-->INJECTED
+10
+11    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+11-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:3:5-71
+11-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:3:22-68
+12    <uses-permission android:name="android.permission.INTERNET" />
+12-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:4:5-67
+12-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:4:22-64
+13
+14    <queries>
+14-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:5:5-8:15
+15        <package android:name="com.zhiliaoapp.musically" />
+15-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:6:9-60
+15-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:6:18-57
+16        <package android:name="com.ss.android.ugc.trill" />
+16-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:7:9-60
+16-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:7:18-57
+17    </queries>
+18
+19    <application
+19-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:9:5-32:19
+20        android:allowBackup="false"
+20-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:10:9-36
+21        android:debuggable="true"
+22        android:extractNativeLibs="false"
+22-->INJECTED
+23        android:label="Live Copilot"
+23-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:11:9-37
+24        android:supportsRtl="true"
+24-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:12:9-35
+25        android:theme="@android:style/Theme.Material.Light.NoActionBar" >
+25-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:13:9-72
+26        <activity
+26-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:14:9-19:20
+27            android:name="com.livecopilot.micprobe.MainActivity"
+27-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:14:19-47
+28            android:exported="true" >
+28-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:14:48-71
+29            <intent-filter>
+29-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:15:13-18:29
+30                <action android:name="android.intent.action.MAIN" />
+30-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:16:17-69
+30-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:16:25-66
+31
+32                <category android:name="android.intent.category.LAUNCHER" />
+32-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:17:17-77
+32-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:17:27-74
+33            </intent-filter>
+34        </activity>
+35
+36        <service
+36-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:20:9-31:19
+37            android:name="com.livecopilot.micprobe.MicProbeAccessibilityService"
+37-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:21:13-57
+38            android:exported="true"
+38-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:22:13-36
+39            android:label="Live Copilot overlay"
+39-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:23:13-49
+40            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" >
+40-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:24:13-79
+41            <intent-filter>
+41-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:25:13-27:29
+42                <action android:name="android.accessibilityservice.AccessibilityService" />
+42-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:26:17-92
+42-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:26:25-89
+43            </intent-filter>
+44
+45            <meta-data
+45-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:28:13-30:72
+46                android:name="android.accessibilityservice"
+46-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:29:17-60
+47                android:resource="@xml/accessibility_service_config" />
+47-->/home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:30:17-69
+48        </service>
+49    </application>
+50
+51</manifest>

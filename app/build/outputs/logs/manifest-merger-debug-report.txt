@@ -1,0 +1,91 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:2:1-33:12
+INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:2:1-33:12
+INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:2:1-33:12
+INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:2:1-33:12
+	package
+		INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml
+	android:versionName
+		INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml
+	android:versionCode
+		INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:2:11-69
+uses-permission#android.permission.RECORD_AUDIO
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:3:5-71
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:3:22-68
+uses-permission#android.permission.INTERNET
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:4:5-67
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:4:22-64
+queries
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:5:5-8:15
+package#com.zhiliaoapp.musically
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:6:9-60
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:6:18-57
+package#com.ss.android.ugc.trill
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:7:9-60
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:7:18-57
+application
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:9:5-32:19
+INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:9:5-32:19
+	android:extractNativeLibs
+		INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml
+	android:supportsRtl
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:12:9-35
+	android:label
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:11:9-37
+	android:allowBackup
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:10:9-36
+	android:theme
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:13:9-72
+activity#com.livecopilot.micprobe.MainActivity
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:14:9-19:20
+	android:exported
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:14:48-71
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:14:19-47
+intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.LAUNCHER
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:15:13-18:29
+action#android.intent.action.MAIN
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:16:17-69
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:16:25-66
+category#android.intent.category.LAUNCHER
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:17:17-77
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:17:27-74
+service#com.livecopilot.micprobe.MicProbeAccessibilityService
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:20:9-31:19
+	android:label
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:23:13-49
+	android:exported
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:22:13-36
+	android:permission
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:24:13-79
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:21:13-57
+intent-filter#action:name:android.accessibilityservice.AccessibilityService
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:25:13-27:29
+action#android.accessibilityservice.AccessibilityService
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:26:17-92
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:26:25-89
+meta-data#android.accessibilityservice
+ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:28:13-30:72
+	android:resource
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:30:17-69
+	android:name
+		ADDED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml:29:17-60
+uses-sdk
+INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml
+INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /home/runner/work/LiveCopilotMicProbe/LiveCopilotMicProbe/app/src/main/AndroidManifest.xml

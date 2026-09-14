@@ -23,8 +23,8 @@ import java.util.concurrent.Executors;
 
 final class OpenAiCopilotClient {
     interface Listener {
-        void onTranscript(String transcript);
-        void onReplies(Replies replies);
+        void onTranscript(long sessionSerial, long inputSerial, String transcript);
+        void onReplies(long sessionSerial, long replySerial, Replies replies);
         void onStatus(String status);
     }
 
@@ -140,6 +140,25 @@ final class OpenAiCopilotClient {
         // rather than waiting for its final transcript.
         latestInputSerial++;
         latestReplySerial++;
+    }
+
+    synchronized void invalidatePendingWork() {
+        if (closed) return;
+        // Preserve rolling conversation context across a short pause, but make every
+        // queued/in-flight file STT and reply callback from before the pause stale.
+        latestInputSerial++;
+        latestReplySerial++;
+        audioQueue.clear();
+    }
+
+    synchronized boolean isTranscriptCallbackCurrent(long callbackSessionSerial, long inputSerial) {
+        return AsyncCallbackFreshnessPolicy.shouldAccept(
+                callbackSessionSerial, sessionSerial, inputSerial, latestInputSerial, closed);
+    }
+
+    synchronized boolean isReplyCallbackCurrent(long callbackSessionSerial, long replySerial) {
+        return AsyncCallbackFreshnessPolicy.shouldAccept(
+                callbackSessionSerial, sessionSerial, replySerial, latestReplySerial, closed);
     }
 
     synchronized void rememberAcceptedTranscript(String transcript) {
@@ -259,7 +278,7 @@ final class OpenAiCopilotClient {
                 return;
             }
 
-            listener.onTranscript(focus);
+            listener.onTranscript(item.sessionSerial, item.inputSerial, focus);
             synchronized (this) {
                 if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
             }
@@ -359,7 +378,7 @@ final class OpenAiCopilotClient {
                 lastCalmReply = "";
                 lastReplyAtMs = System.currentTimeMillis();
             }
-            listener.onReplies(new Replies(primary, "", "", ""));
+            listener.onReplies(job.sessionSerial, job.serial, new Replies(primary, "", "", ""));
             listener.onStatus("Слушам");
 
             String primaryCopy = primary;
@@ -375,7 +394,7 @@ final class OpenAiCopilotClient {
                 lastCalmReply = local.calm;
                 lastReplyAtMs = System.currentTimeMillis();
             }
-            listener.onReplies(new Replies(direct, local.sarcastic, local.funny, local.calm));
+            listener.onReplies(job.sessionSerial, job.serial, new Replies(direct, local.sarcastic, local.funny, local.calm));
             listener.onStatus("Слушам");
         }
     }
@@ -398,7 +417,7 @@ final class OpenAiCopilotClient {
                 lastFunnyReply = complete.funny;
                 lastCalmReply = complete.calm;
             }
-            listener.onReplies(complete);
+            listener.onReplies(job.sessionSerial, job.serial, complete);
         } catch (Throwable ignored) {
             if (!current(job)) return;
             ReplyGenerator.Replies local = ReplyGenerator.generate(job.context, job.focus);
@@ -407,7 +426,7 @@ final class OpenAiCopilotClient {
                 lastFunnyReply = local.funny;
                 lastCalmReply = local.calm;
             }
-            listener.onReplies(new Replies(primary, local.sarcastic, local.funny, local.calm));
+            listener.onReplies(job.sessionSerial, job.serial, new Replies(primary, local.sarcastic, local.funny, local.calm));
         }
     }
 

@@ -1,0 +1,6 @@
+[
+    {
+        "merged": "com.livecopilot.micprobe.app-debug-3:/xml_accessibility_service_config.xml.flat",
+        "source": "com.livecopilot.micprobe.app-main-5:/xml/accessibility_service_config.xml"
+    }
+]

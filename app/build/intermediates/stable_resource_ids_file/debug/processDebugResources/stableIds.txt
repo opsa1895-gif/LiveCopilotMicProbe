@@ -1,0 +1,3 @@
+com.livecopilot.micprobe:xml/accessibility_service_config = 0x7f020000
+com.livecopilot.micprobe:string/app_name = 0x7f010001
+com.livecopilot.micprobe:string/accessibility_service_description = 0x7f010000

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.livecopilot.micprobe.FileSttFreshnessPolicyTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-09-14T19:11:26.567Z" hostname="runnervmlun5p" time="0.0">
+  <properties/>
+  <testcase name="olderResultCannotSurfaceAfterNewSpeech" classname="com.livecopilot.micprobe.FileSttFreshnessPolicyTest" time="0.0"/>
+  <testcase name="oldSessionCannotSurface" classname="com.livecopilot.micprobe.FileSttFreshnessPolicyTest" time="0.0"/>
+  <testcase name="latestFreshResultCanSurface" classname="com.livecopilot.micprobe.FileSttFreshnessPolicyTest" time="0.0"/>
+  <testcase name="queueTimeRecheckRejectsItemAfterSerialAdvances" classname="com.livecopilot.micprobe.FileSttFreshnessPolicyTest" time="0.0"/>
+  <testcase name="slowResultIsTooOldForLiveOverlay" classname="com.livecopilot.micprobe.FileSttFreshnessPolicyTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

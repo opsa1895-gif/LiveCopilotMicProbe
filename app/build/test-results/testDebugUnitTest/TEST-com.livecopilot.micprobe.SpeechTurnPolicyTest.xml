@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.livecopilot.micprobe.SpeechTurnPolicyTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-09-14T19:11:26.719Z" hostname="runnervmlun5p" time="0.001">
+  <properties/>
+  <testcase name="noiseBurstWithoutEnoughVoicedFramesDoesNotEndTurn" classname="com.livecopilot.micprobe.SpeechTurnPolicyTest" time="0.0"/>
+  <testcase name="longSpeechKeeps580msPause" classname="com.livecopilot.micprobe.SpeechTurnPolicyTest" time="0.0"/>
+  <testcase name="veryShortSpeechUsesFast360msEndpoint" classname="com.livecopilot.micprobe.SpeechTurnPolicyTest" time="0.0"/>
+  <testcase name="shortSpeechUses420msEndpoint" classname="com.livecopilot.micprobe.SpeechTurnPolicyTest" time="0.0"/>
+  <testcase name="neverEndsBeforeMinimumSegmentLength" classname="com.livecopilot.micprobe.SpeechTurnPolicyTest" time="0.0"/>
+  <testcase name="shortQuestionCanEndBeforeOneSecondTotalSegment" classname="com.livecopilot.micprobe.SpeechTurnPolicyTest" time="0.001"/>
+  <testcase name="mediumSpeechKeeps500msPause" classname="com.livecopilot.micprobe.SpeechTurnPolicyTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

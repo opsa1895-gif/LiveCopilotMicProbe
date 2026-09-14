@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.livecopilot.micprobe.SemanticSchedulingPolicyTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-14T19:11:26.713Z" hostname="runnervmlun5p" time="0.002">
+  <properties/>
+  <testcase name="ordinaryStatementKeepsConservativeGap" classname="com.livecopilot.micprobe.SemanticSchedulingPolicyTest" time="0.001"/>
+  <testcase name="obviousQuestionGetsFastGap" classname="com.livecopilot.micprobe.SemanticSchedulingPolicyTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
