@@ -81,6 +81,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private long semanticAnswerBaselineMs;
     private long semanticPrimaryAppliedAtMs;
     private long activeSemanticRequestId = -1L;
+    private long semanticEpoch = 1L;
+    private long activeSemanticEpoch = -1L;
 
     // Hidden diagnostics only. These are deliberately not shown in the normal overlay.
     private long lastVoiceEndAtMs;
@@ -180,12 +182,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     public synchronized void onStreamTurnStart(int sampleRate) {
         clearFallbackTurnAudio();
         realtimePartial = "";
+        semanticEpoch++;
 
         // New speech immediately makes older generated work stale. Do this before
         // waiting for a final transcript so an old answer cannot pop over a new turn.
         if (aiClient != null) aiClient.noteNewSpeech();
         if (semanticFallback != null) semanticFallback.invalidate();
         activeSemanticRequestId = -1L;
+        activeSemanticEpoch = -1L;
         semanticPrimaryAppliedAtMs = 0L;
         pendingSemanticFocus = "";
 
@@ -338,9 +342,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             realtimeTranscriber.rememberAcceptedTranscript(useful);
         }
         if (!useful.isEmpty()) {
+            semanticEpoch++;
             if (semanticFallback != null && activeSemanticRequestId >= 0L) {
                 semanticFallback.invalidate();
                 activeSemanticRequestId = -1L;
+                activeSemanticEpoch = -1L;
                 semanticPrimaryAppliedAtMs = 0L;
             }
             if ((lastSemanticTranscriptAtMs > 0L
@@ -377,6 +383,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         if (semanticFallback != null) semanticFallback.invalidate();
         activeSemanticRequestId = -1L;
+        activeSemanticEpoch = -1L;
         semanticPrimaryAppliedAtMs = 0L;
         pendingSemanticFocus = "";
 
@@ -407,7 +414,19 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     }
 
     @Override
-    public void onStatus(String status) {
+    public void onStatus(long sessionSerial, long workSerial, boolean replyWork, String status) {
+        getMainExecutor().execute(() ->
+                handleFileStatus(sessionSerial, workSerial, replyWork, status));
+    }
+
+    private synchronized void handleFileStatus(
+            long sessionSerial, long workSerial, boolean replyWork, String status) {
+        if (aiClient == null) return;
+        boolean current = replyWork
+                ? aiClient.isReplyCallbackCurrent(sessionSerial, workSerial)
+                : aiClient.isTranscriptCallbackCurrent(sessionSerial, workSerial);
+        if (!current || engine == null || !engine.isRunning()) return;
+
         String raw = status == null ? "" : status.trim();
         String lower = raw.toLowerCase(Locale.ROOT);
         if (lower.contains("мисля") || lower.contains("генерирам")) {
@@ -416,11 +435,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             lastStylesLatencyMs = -1L;
         }
         aiStatus = simplifyStatus(raw);
-        getMainExecutor().execute(() -> {
-            renderStatus();
-            renderDebug();
-            if (isListeningStatus(raw)) scheduleSemanticFallbackIfNeeded();
-        });
+        renderStatus();
+        renderDebug();
+        if (isListeningStatus(raw)) scheduleSemanticFallbackIfNeeded();
     }
 
     private void scheduleSemanticFallbackIfNeeded() {
@@ -439,23 +456,26 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         String focusSnapshot = pendingSemanticFocus;
         long focusTimeSnapshot = pendingSemanticAtMs;
+        long semanticEpochSnapshot = semanticEpoch;
         long minGapMs = SemanticSchedulingPolicy.minGapMs(focusSnapshot);
         long wait = Math.max(0L, minGapMs - (now - lastSemanticRequestAtMs));
         if (wait > 0L) {
             overlay.postDelayed(() -> {
-                if (focusSnapshot.equals(pendingSemanticFocus)
+                if (SemanticEpochPolicy.shouldRun(semanticEpochSnapshot, semanticEpoch)
+                        && focusSnapshot.equals(pendingSemanticFocus)
                         && focusTimeSnapshot == pendingSemanticAtMs
                         && answerUpdatedAtMs < focusTimeSnapshot) {
-                    requestSemanticFallback(focusSnapshot, focusTimeSnapshot);
+                    requestSemanticFallback(focusSnapshot, focusTimeSnapshot, semanticEpochSnapshot);
                 }
             }, wait);
             return;
         }
-        requestSemanticFallback(focusSnapshot, focusTimeSnapshot);
+        requestSemanticFallback(focusSnapshot, focusTimeSnapshot, semanticEpochSnapshot);
     }
 
-    private void requestSemanticFallback(String focus, long focusAtMs) {
+    private void requestSemanticFallback(String focus, long focusAtMs, long expectedSemanticEpoch) {
         if (engine == null || !engine.isRunning() || semanticFallback == null) return;
+        if (!SemanticEpochPolicy.shouldRun(expectedSemanticEpoch, semanticEpoch)) return;
         long now = System.currentTimeMillis();
         if (focus == null || focus.isEmpty() || now - focusAtMs > SEMANTIC_FOCUS_MAX_AGE_MS) return;
         if (answerUpdatedAtMs >= focusAtMs) return;
@@ -464,13 +484,16 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastSemanticRequestAtMs = now;
         semanticAnswerBaselineMs = answerUpdatedAtMs;
         semanticPrimaryAppliedAtMs = 0L;
-        activeSemanticRequestId = semanticFallback.request(
+        long requestId = semanticFallback.request(
                 buildSemanticContext(), focus, currentVisibleSuggestion());
+        activeSemanticRequestId = requestId;
+        activeSemanticEpoch = requestId >= 0L ? expectedSemanticEpoch : -1L;
         pendingSemanticFocus = "";
     }
 
     private void applySemanticReply(long requestId, OpenAiCopilotClient.Replies replies) {
         if (requestId < 0L || requestId != activeSemanticRequestId) return;
+        if (!SemanticEpochPolicy.shouldRun(activeSemanticEpoch, semanticEpoch)) return;
         if (engine == null || !engine.isRunning() || replies == null) return;
 
         boolean primaryOnly = hasText(replies.direct)
@@ -511,6 +534,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             semanticPrimaryAppliedAtMs = now;
         } else {
             activeSemanticRequestId = -1L;
+            activeSemanticEpoch = -1L;
             semanticPrimaryAppliedAtMs = 0L;
         }
         renderDebug();
@@ -665,12 +689,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private void toggleRunning() {
         if (engine == null) return;
         if (engine.isRunning()) {
+            semanticEpoch++;
             if (aiClient != null) aiClient.invalidatePendingWork();
             engine.stop("user_paused");
             if (realtimeTranscriber != null) realtimeTranscriber.stop();
             pausedAtMs = System.currentTimeMillis();
             if (semanticFallback != null) semanticFallback.invalidate();
             activeSemanticRequestId = -1L;
+            activeSemanticEpoch = -1L;
             semanticPrimaryAppliedAtMs = 0L;
             pendingSemanticFocus = "";
             realtimeTurnActive = false;
@@ -684,6 +710,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         }
 
         long now = System.currentTimeMillis();
+        semanticEpoch++;
         boolean resetContext = !hasStartedSession || pausedAtMs == 0L || now - pausedAtMs >= CONTEXT_RESET_AFTER_PAUSE_MS;
         if (resetContext && aiClient != null) aiClient.resetSession();
         if (resetContext && semanticFallback != null) semanticFallback.invalidate();
@@ -709,6 +736,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             semanticAnswerBaselineMs = 0L;
             semanticPrimaryAppliedAtMs = 0L;
             activeSemanticRequestId = -1L;
+            activeSemanticEpoch = -1L;
             semanticTurns.clear();
             resetLatencyMetrics();
             if (answerText != null) {

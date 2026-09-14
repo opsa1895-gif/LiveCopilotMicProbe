@@ -25,7 +25,7 @@ final class OpenAiCopilotClient {
     interface Listener {
         void onTranscript(long sessionSerial, long inputSerial, String transcript);
         void onReplies(long sessionSerial, long replySerial, Replies replies);
-        void onStatus(String status);
+        void onStatus(long sessionSerial, long workSerial, boolean replyWork, String status);
     }
 
     static final class Replies {
@@ -244,37 +244,37 @@ final class OpenAiCopilotClient {
     private void processAudio(AudioItem item) {
         String key = SecretStore.loadApiKey(context);
         if (key.isEmpty()) {
-            listener.onStatus("Няма API key");
+            listener.onStatus(item.sessionSerial, item.inputSerial, false, "Няма API key");
             return;
         }
 
         try {
-            listener.onStatus("Разпознавам…");
+            listener.onStatus(item.sessionSerial, item.inputSerial, false, "Разпознавам…");
             String raw = transcribe(key, item.samples, item.sampleRate);
             if (!isCurrentSession(item.sessionSerial)) return;
             if (TranscriptQualityPolicy.isLowQuality(raw)) {
-                listener.onStatus("Слушам");
+                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                 return;
             }
 
             long now = System.currentTimeMillis();
             String useful = removeRecentSelfEcho(raw, now);
             if (useful.isEmpty()) {
-                listener.onStatus("Слушам");
+                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                 return;
             }
 
             prepareContextFor(useful, now);
             String focus = commitTranscript(useful, now);
             if (focus.isEmpty()) {
-                listener.onStatus("Слушам");
+                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                 return;
             }
 
             // Keep stale speech in internal context, but never surface it over newer
             // live input or after it has become too old to be useful on screen.
             if (!shouldSurfaceAudioResult(item)) {
-                listener.onStatus("Слушам");
+                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                 return;
             }
 
@@ -291,10 +291,16 @@ final class OpenAiCopilotClient {
             boolean engagement = !actionable && reference > 0L && now - reference >= ENGAGEMENT_GAP_MS;
 
             if (actionable || engagement) {
-                if (!queueReplyIfFresh(item, focus, engagement)) listener.onStatus("Слушам");
-            } else listener.onStatus("Слушам");
+                if (!queueReplyIfFresh(item, focus, engagement)) {
+                    listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
+                }
+            } else {
+                listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
+            }
         } catch (Throwable ignored) {
-            if (isCurrentSession(item.sessionSerial)) listener.onStatus("AI връзката прекъсна");
+            if (isCurrentSession(item.sessionSerial)) {
+                listener.onStatus(item.sessionSerial, item.inputSerial, false, "AI връзката прекъсна");
+            }
         }
     }
 
@@ -363,7 +369,7 @@ final class OpenAiCopilotClient {
         String primary = "";
 
         try {
-            listener.onStatus("Мисля…");
+            listener.onStatus(job.sessionSerial, job.serial, true, "Мисля…");
             primary = primaryReply(key, job.context, job.focus, job.previousSuggestion, job.engagement, false);
             if (!current(job)) return;
             if (primary.isEmpty()) throw new IllegalStateException("empty primary");
@@ -379,7 +385,7 @@ final class OpenAiCopilotClient {
                 lastReplyAtMs = System.currentTimeMillis();
             }
             listener.onReplies(job.sessionSerial, job.serial, new Replies(primary, "", "", ""));
-            listener.onStatus("Слушам");
+            listener.onStatus(job.sessionSerial, job.serial, true, "Слушам");
 
             String primaryCopy = primary;
             variantExecutor.execute(() -> processVariants(job, key, primaryCopy, varyDirect));
@@ -395,7 +401,7 @@ final class OpenAiCopilotClient {
                 lastReplyAtMs = System.currentTimeMillis();
             }
             listener.onReplies(job.sessionSerial, job.serial, new Replies(direct, local.sarcastic, local.funny, local.calm));
-            listener.onStatus("Слушам");
+            listener.onStatus(job.sessionSerial, job.serial, true, "Слушам");
         }
     }
 
