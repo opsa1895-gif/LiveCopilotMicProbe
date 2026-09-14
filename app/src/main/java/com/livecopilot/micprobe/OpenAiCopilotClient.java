@@ -79,7 +79,6 @@ final class OpenAiCopilotClient {
         }
     }
 
-    private static final int MAX_AUDIO_QUEUE = 2;
     private static final int MAX_TURNS = 8;
     private static final long MAX_AUDIO_AGE_MS = FileSttFreshnessPolicy.MAX_SURFACE_AGE_MS;
     private static final long CONTEXT_IDLE_RESET_MS = 45_000L;
@@ -93,15 +92,13 @@ final class OpenAiCopilotClient {
 
     private final Context context;
     private final Listener listener;
-    private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
+    private final LatestWinsExecutor audioExecutor = new LatestWinsExecutor(1);
     private final LatestWinsExecutor replyExecutor = new LatestWinsExecutor(2);
     private final ExecutorService variantExecutor = Executors.newSingleThreadExecutor();
     private final HttpConnectionRegistry replyHttp = new HttpConnectionRegistry();
     private final HttpConnectionRegistry audioHttp = new HttpConnectionRegistry();
-    private final Deque<AudioItem> audioQueue = new ArrayDeque<>();
     private final Deque<String> recentTurns = new ArrayDeque<>();
 
-    private boolean audioWorkerRunning;
     private boolean closed;
     private long sessionSerial = 1L;
     private long latestInputSerial;
@@ -126,7 +123,6 @@ final class OpenAiCopilotClient {
         replyHttp.cancelAll();
         latestInputSerial = 0L;
         latestReplySerial++;
-        audioQueue.clear();
         recentTurns.clear();
         summary = "";
         lastDirectReply = "";
@@ -156,7 +152,6 @@ final class OpenAiCopilotClient {
         latestReplySerial++;
         audioHttp.cancelAll();
         replyHttp.cancelAll();
-        audioQueue.clear();
     }
 
     synchronized boolean isTranscriptCallbackCurrent(long callbackSessionSerial, long inputSerial) {
@@ -221,38 +216,22 @@ final class OpenAiCopilotClient {
 
     synchronized void submitAudio(short[] samples, int sampleRate) {
         if (closed || samples == null || samples.length == 0) return;
-        long now = System.currentTimeMillis();
         long inputSerial = ++latestInputSerial;
         // New file audio supersedes any older in-flight transcription as well as
-        // reply work derived from older audio.
+        // reply work derived from older audio. LatestWinsExecutor also keeps only
+        // one pending task, so bursty fallback audio cannot build a stale backlog.
         latestReplySerial++;
         audioHttp.cancelAll();
         replyHttp.cancelAll();
-        while (!audioQueue.isEmpty() && now - audioQueue.peekFirst().createdAtMs > MAX_AUDIO_AGE_MS) {
-            audioQueue.removeFirst();
-        }
-        while (audioQueue.size() >= MAX_AUDIO_QUEUE) audioQueue.removeFirst();
-        audioQueue.addLast(new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial));
-        if (!audioWorkerRunning) {
-            audioWorkerRunning = true;
-            audioExecutor.execute(this::drainAudio);
-        }
+        AudioItem item = new AudioItem(samples.clone(), sampleRate, sessionSerial, inputSerial);
+        audioExecutor.execute(() -> processAudioIfFresh(item));
     }
 
-    private void drainAudio() {
-        while (true) {
-            AudioItem item;
-            synchronized (this) {
-                item = audioQueue.pollFirst();
-                if (item == null || closed) {
-                    audioWorkerRunning = false;
-                    return;
-                }
-            }
-            if (System.currentTimeMillis() - item.createdAtMs > MAX_AUDIO_AGE_MS) continue;
-            if (!isCurrentSession(item.sessionSerial)) continue;
-            processAudio(item);
-        }
+    private void processAudioIfFresh(AudioItem item) {
+        // A queued task may have been superseded before the worker became free.
+        // Reject it before API-key loading, status callbacks, or network work.
+        if (item == null || !shouldSurfaceAudioResult(item)) return;
+        processAudio(item);
     }
 
     private void processAudio(AudioItem item) {
@@ -515,8 +494,7 @@ final class OpenAiCopilotClient {
             closed = true;
             sessionSerial++;
             latestReplySerial++;
-            audioQueue.clear();
-            }
+        }
         audioHttp.cancelAll();
         replyHttp.cancelAll();
         audioExecutor.shutdownNow();
