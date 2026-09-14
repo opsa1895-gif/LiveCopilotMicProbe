@@ -29,19 +29,21 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android platform
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+        run: sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.6.1'
 
       - name: Patch status and semantic freshness
         run: python3 .github/v0_53_patch.py
 
       - name: Run unit tests
-        run: ./gradlew testDebugUnitTest --no-daemon
+        run: gradle --no-daemon :app:testDebugUnitTest
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
+        run: gradle --no-daemon :app:assembleDebug
 
       - name: Commit patch
         run: |
