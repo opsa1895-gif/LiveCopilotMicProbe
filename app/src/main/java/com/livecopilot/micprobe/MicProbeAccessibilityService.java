@@ -214,14 +214,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onTranscript(String transcript) {
-        lastFileTranscriptAtMs = System.currentTimeMillis();
         acceptTranscript(transcript, false);
     }
 
     private void handleRealtimeFinal(long turnSerial, String transcript) {
         if (turnSerial <= lastRealtimeTurnSerial) return;
         lastRealtimeTurnSerial = turnSerial;
-        lastRealtimeTranscriptAtMs = System.currentTimeMillis();
         realtimePartial = "";
         acceptTranscript(transcript, true);
     }
@@ -229,6 +227,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private void acceptTranscript(String transcript, boolean fromRealtime) {
         String clean = transcript == null ? "" : transcript.replace('\n', ' ').trim();
         long now = System.currentTimeMillis();
+        if (TranscriptQualityPolicy.isLowQuality(clean)) {
+            aiStatus = "Слушам";
+            renderStatus();
+            renderDebug();
+            return;
+        }
         if (!clean.isEmpty()
                 && lastVoiceEndAtMs > 0L
                 && now >= lastVoiceEndAtMs
@@ -248,6 +252,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             return;
         }
         if (echoAdjusted) lastSelfEchoAtMs = now;
+        if (fromRealtime) lastRealtimeTranscriptAtMs = now;
+        else lastFileTranscriptAtMs = now;
         if (fromRealtime && !useful.isEmpty() && realtimeTranscriber != null) {
             realtimeTranscriber.rememberAcceptedTranscript(useful);
         }

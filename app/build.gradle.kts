@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 32
-        versionName = "0.31.0-actionable-prefixes"
+        versionCode = 33
+        versionName = "0.32.0-transcript-quality"
     }
 
     compileOptions {

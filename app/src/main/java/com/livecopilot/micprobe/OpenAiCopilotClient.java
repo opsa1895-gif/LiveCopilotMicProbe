@@ -171,7 +171,7 @@ final class OpenAiCopilotClient {
             listener.onStatus("Разпознавам…");
             String raw = transcribe(key, item.samples, item.sampleRate);
             if (!isCurrentSession(item.sessionSerial)) return;
-            if (lowQuality(raw)) {
+            if (TranscriptQualityPolicy.isLowQuality(raw)) {
                 listener.onStatus("Слушам");
                 return;
             }
@@ -635,16 +635,6 @@ final class OpenAiCopilotClient {
                 v.startsWith("нов въпрос ") || v.equals("нов въпрос") ||
                 v.startsWith("друго нещо ") || v.equals("друго нещо") ||
                 v.startsWith("сменям темата ") || v.equals("сменям темата");
-    }
-
-    private static boolean lowQuality(String value) {
-        String s = clean(value);
-        if (s.length() < 2) return true;
-        int alnum = 0;
-        for (int i = 0; i < s.length(); i++) if (Character.isLetterOrDigit(s.charAt(i))) alnum++;
-        if (alnum < 2) return true;
-        String v = s.toLowerCase(Locale.ROOT);
-        return v.equals("music") || v.equals("музика") || v.equals("[music]") || v.equals("...");
     }
 
     private static String stripOverlap(String previous, String current) {
