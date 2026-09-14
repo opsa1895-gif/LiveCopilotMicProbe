@@ -24,28 +24,28 @@ jobs:
         run: |
           from pathlib import Path
 
-          def replace_once(path, old, new):
+          def replace_exact(path, old, new, expected=1):
               p = Path(path)
               s = p.read_text(encoding='utf-8')
               count = s.count(old)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected 1 match, got {count} for {old[:80]!r}')
-              p.write_text(s.replace(old, new, 1), encoding='utf-8')
+              if count != expected:
+                  raise SystemExit(f'{path}: expected {expected} matches, got {count} for {old[:80]!r}')
+              p.write_text(s.replace(old, new), encoding='utf-8')
 
           service = 'app/src/main/java/com/livecopilot/micprobe/MicProbeAccessibilityService.java'
           client = 'app/src/main/java/com/livecopilot/micprobe/OpenAiCopilotClient.java'
           gradle = 'app/build.gradle.kts'
 
-          replace_once(service,
+          replace_exact(service,
               '    private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;\n',
               '    private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;\n'
               '    private static final long SELF_ECHO_WINDOW_MS = 12_000L;\n')
 
-          replace_once(service,
+          replace_exact(service,
               '    private long lastSemanticTranscriptAtMs;\n    private long semanticAnswerBaselineMs;\n',
               '    private long lastSemanticTranscriptAtMs;\n    private long lastSelfEchoAtMs;\n    private long semanticAnswerBaselineMs;\n')
 
-          replace_once(service,
+          replace_exact(service,
               '        lastTranscript = clean;\n        if (!clean.isEmpty()) {\n',
               '        lastTranscript = clean;\n'
               '        if (!clean.isEmpty() && isLikelySelfEcho(clean, now)) {\n'
@@ -58,7 +58,7 @@ jobs:
               '        }\n'
               '        if (!clean.isEmpty()) {\n')
 
-          replace_once(service,
+          replace_exact(service,
               '    private String buildSemanticContext() {\n',
               '    private boolean isLikelySelfEcho(String transcript, long now) {\n'
               '        if (currentReplies == null || answerUpdatedAtMs <= 0L) return false;\n'
@@ -73,22 +73,22 @@ jobs:
               '    }\n\n'
               '    private String buildSemanticContext() {\n')
 
-          replace_once(service,
+          replace_exact(service,
               '            lastSemanticTranscriptAtMs = 0L;\n            semanticAnswerBaselineMs = 0L;\n',
               '            lastSemanticTranscriptAtMs = 0L;\n            lastSelfEchoAtMs = 0L;\n            semanticAnswerBaselineMs = 0L;\n')
 
-          replace_once(service,
+          replace_exact(service,
               '        debugText.setText(app + " • " + mic + rt + heard + partial + latency);\n',
               '        String echo = lastSelfEchoAtMs > 0L\n'
               '                && System.currentTimeMillis() - lastSelfEchoAtMs < 5_000L ? " • echo" : "";\n'
               '        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency);\n')
 
-          replace_once(client,
+          replace_exact(client,
               '    private static final long MAX_REPLY_AGE_MS = 12_000L;\n',
               '    private static final long MAX_REPLY_AGE_MS = 12_000L;\n'
               '    private static final long SELF_ECHO_WINDOW_MS = 12_000L;\n')
 
-          replace_once(client,
+          replace_exact(client,
               '    private String summary = "";\n    private String lastDirectReply = "";\n',
               '    private String summary = "";\n'
               '    private String lastDirectReply = "";\n'
@@ -96,16 +96,17 @@ jobs:
               '    private String lastFunnyReply = "";\n'
               '    private String lastCalmReply = "";\n')
 
-          replace_once(client,
+          replace_exact(client,
               '        summary = "";\n        lastDirectReply = "";\n        lastReplyAtMs = 0L;\n',
               '        summary = "";\n'
               '        lastDirectReply = "";\n'
               '        lastSarcasticReply = "";\n'
               '        lastFunnyReply = "";\n'
               '        lastCalmReply = "";\n'
-              '        lastReplyAtMs = 0L;\n')
+              '        lastReplyAtMs = 0L;\n',
+              expected=2)
 
-          replace_once(client,
+          replace_exact(client,
               '            listener.onTranscript(focus);\n            synchronized (this) {\n',
               '            listener.onTranscript(focus);\n'
               '            if (isRecentSelfEcho(focus, now)) {\n'
@@ -114,17 +115,7 @@ jobs:
               '            }\n'
               '            synchronized (this) {\n')
 
-          replace_once(client,
-              '        recentTurns.clear();\n        summary = "";\n        lastDirectReply = "";\n        lastReplyAtMs = 0L;\n',
-              '        recentTurns.clear();\n'
-              '        summary = "";\n'
-              '        lastDirectReply = "";\n'
-              '        lastSarcasticReply = "";\n'
-              '        lastFunnyReply = "";\n'
-              '        lastCalmReply = "";\n'
-              '        lastReplyAtMs = 0L;\n')
-
-          replace_once(client,
+          replace_exact(client,
               '            synchronized (this) {\n                lastDirectReply = primary;\n                lastReplyAtMs = System.currentTimeMillis();\n            }\n',
               '            synchronized (this) {\n'
               '                lastDirectReply = primary;\n'
@@ -134,7 +125,7 @@ jobs:
               '                lastReplyAtMs = System.currentTimeMillis();\n'
               '            }\n')
 
-          replace_once(client,
+          replace_exact(client,
               '            synchronized (this) {\n                lastDirectReply = direct;\n                lastReplyAtMs = System.currentTimeMillis();\n            }\n            listener.onReplies(new Replies(direct, local.sarcastic, local.funny, local.calm));\n',
               '            synchronized (this) {\n'
               '                lastDirectReply = direct;\n'
@@ -145,7 +136,7 @@ jobs:
               '            }\n'
               '            listener.onReplies(new Replies(direct, local.sarcastic, local.funny, local.calm));\n')
 
-          replace_once(client,
+          replace_exact(client,
               '            synchronized (this) {\n                if (!complete.direct.isEmpty()) lastDirectReply = complete.direct;\n            }\n            listener.onReplies(complete);\n',
               '            synchronized (this) {\n'
               '                if (!complete.direct.isEmpty()) lastDirectReply = complete.direct;\n'
@@ -155,7 +146,7 @@ jobs:
               '            }\n'
               '            listener.onReplies(complete);\n')
 
-          replace_once(client,
+          replace_exact(client,
               '            ReplyGenerator.Replies local = ReplyGenerator.generate(job.context, job.focus);\n            listener.onReplies(new Replies(primary, local.sarcastic, local.funny, local.calm));\n',
               '            ReplyGenerator.Replies local = ReplyGenerator.generate(job.context, job.focus);\n'
               '            synchronized (this) {\n'
@@ -165,7 +156,7 @@ jobs:
               '            }\n'
               '            listener.onReplies(new Replies(primary, local.sarcastic, local.funny, local.calm));\n')
 
-          replace_once(client,
+          replace_exact(client,
               '    private synchronized boolean isCurrentSession(long serial) {\n',
               '    private synchronized boolean isRecentSelfEcho(String focus, long now) {\n'
               '        if (lastReplyAtMs <= 0L || now < lastReplyAtMs\n'
@@ -179,7 +170,7 @@ jobs:
               '    }\n\n'
               '    private synchronized boolean isCurrentSession(long serial) {\n')
 
-          replace_once(gradle,
+          replace_exact(gradle,
               '        versionCode = 20\n        versionName = "0.20.0-nonblocking-styles"\n',
               '        versionCode = 21\n        versionName = "0.21.0-self-echo"\n')
 
