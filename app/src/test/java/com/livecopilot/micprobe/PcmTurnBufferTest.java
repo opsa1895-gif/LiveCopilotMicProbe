@@ -27,6 +27,37 @@ public class PcmTurnBufferTest {
     }
 
     @Test
+    public void repeatedSmallAppendsWrapWithoutLosingOrder() {
+        PcmTurnBuffer buffer = new PcmTurnBuffer(5);
+        buffer.append(new short[]{1, 2, 3, 4});
+        buffer.append(new short[]{5, 6});
+        assertArrayEquals(new short[]{2, 3, 4, 5, 6}, buffer.copy());
+
+        buffer.append(new short[]{7, 8});
+        assertEquals(5, buffer.size());
+        assertArrayEquals(new short[]{4, 5, 6, 7, 8}, buffer.copy());
+    }
+
+    @Test
+    public void growthPreservesLogicalOrderAfterWrap() {
+        PcmTurnBuffer buffer = new PcmTurnBuffer(20_000);
+        short[] first = new short[12_000];
+        short[] second = new short[6_000];
+        for (int i = 0; i < first.length; i++) first[i] = (short) i;
+        for (int i = 0; i < second.length; i++) second[i] = (short) (i + 12_000);
+
+        buffer.append(first);
+        buffer.append(second);
+        short[] out = buffer.copy();
+
+        assertEquals(18_000, out.length);
+        assertEquals(first[0], out[0]);
+        assertEquals(first[first.length - 1], out[first.length - 1]);
+        assertEquals(second[0], out[first.length]);
+        assertEquals(second[second.length - 1], out[out.length - 1]);
+    }
+
+    @Test
     public void oversizedAppendKeepsOnlyItsNewestTail() {
         PcmTurnBuffer buffer = new PcmTurnBuffer(4);
         buffer.append(new short[]{9, 8});
