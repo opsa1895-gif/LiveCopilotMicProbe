@@ -45,7 +45,6 @@ public class LatestWinsExecutorTest {
         }
     }
 
-
     @Test
     public void singleWorkerAlsoKeepsOnlyNewestPendingTask() throws Exception {
         LatestWinsExecutor executor = new LatestWinsExecutor(1);

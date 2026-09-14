@@ -494,7 +494,7 @@ final class OpenAiCopilotClient {
             closed = true;
             sessionSerial++;
             latestReplySerial++;
-                }
+        }
         audioHttp.cancelAll();
         replyHttp.cancelAll();
         audioExecutor.shutdownNow();
