@@ -280,6 +280,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastAcceptedSourceTranscript = sourceTranscript;
         lastAcceptedSourceAtMs = now;
         lastAcceptedFromRealtime = fromRealtime;
+        if (fromRealtime && !useful.isEmpty() && aiClient != null) {
+            // Keep the file-reply lane on the same accepted conversation so a later
+            // fallback does not behave as if the recent Realtime turns never happened.
+            aiClient.rememberAcceptedTranscript(useful);
+        }
         if (!useful.isEmpty() && realtimeTranscriber != null) {
             // Keep one STT context across Realtime and file fallback so reconnects
             // continue from the actual latest conversation.
@@ -445,6 +450,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         currentReplies = replies;
         answerUpdatedAtMs = now;
+        if (aiClient != null) aiClient.rememberShownReplies(replies, now);
         if (answerText != null) answerText.setAlpha(1f);
         if (collapsed && headerText != null) headerText.setText("AI •");
         renderSelectedReply();
