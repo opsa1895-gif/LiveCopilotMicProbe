@@ -33,4 +33,13 @@ public class FileSttFreshnessPolicyTest {
         assertTrue(FileSttFreshnessPolicy.shouldSurface(itemSerial, itemSerial, 300L, true));
         assertFalse(FileSttFreshnessPolicy.shouldSurface(itemSerial, itemSerial + 1L, 301L, true));
     }
+
+    @Test
+    public void contextCommitAndSurfaceShareLatestWinsGate() {
+        long itemSerial = 9L;
+        assertTrue(FileSttFreshnessPolicy.shouldAccept(itemSerial, itemSerial, 250L, true));
+        assertTrue(FileSttFreshnessPolicy.shouldSurface(itemSerial, itemSerial, 250L, true));
+        assertFalse(FileSttFreshnessPolicy.shouldAccept(itemSerial, itemSerial + 1L, 251L, true));
+        assertFalse(FileSttFreshnessPolicy.shouldSurface(itemSerial, itemSerial + 1L, 251L, true));
+    }
 }
