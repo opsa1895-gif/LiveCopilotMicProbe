@@ -9,10 +9,4 @@ if old_clear not in s:
     raise SystemExit('clear-mode helper block not found')
 s = s.replace(old_clear, new_clear, 1)
 
-old_debug = '''s = replace_once(s,\n''' + "'''" + '''        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency);\\n''' + "'''" + ''',\n''' + "'''" + '''        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency + fileConfidence);\\n''' + "'''" + ''', 'debug confidence output')\n'''
-new_debug = '''s = replace_once(s,\n''' + "'''" + '''        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency\\n                + "\\nstt " + SecretStore.loadFileSttModel(this)\\n                + session);\\n''' + "'''" + ''',\n''' + "'''" + '''        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency\\n                + fileConfidence\\n                + "\\nstt " + SecretStore.loadFileSttModel(this)\\n                + session);\\n''' + "'''" + ''', 'debug confidence output')\n'''
-if old_debug not in s:
-    raise SystemExit('debug-output helper block not found')
-s = s.replace(old_debug, new_debug, 1)
-
 p.write_text(s)
