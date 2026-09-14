@@ -1,0 +1,96 @@
+name: Format v0.49 source
+
+on:
+  push:
+    branches:
+      - copilot-v0-49-clear-send-recovery
+    paths:
+      - .github/workflows/fix-v049-format.yml
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: copilot-v0-49-clear-send-recovery
+      - name: Fix indentation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/livecopilot/micprobe/RealtimeTranscriptionClient.java')
+          s = p.read_text()
+          old = '''        if (!ready || socket == null || sentSamples < MIN_COMMIT_SAMPLES) {
+          WebSocket failedSocket = null;
+          boolean clearFailed = ready && socket != null && !sendClearLocked();
+          sentSamples = 0;
+          activeBackup.clear();
+          partial.setLength(0);
+          listener.onPartial("");
+          if (clearFailed) {
+              failedSocket = socket;
+              socket = null;
+              ready = false;
+              awaitingCompletion = false;
+              listener.onState("fallback");
+              try { failedSocket.close(1011, "clear_failed"); } catch (Throwable ignored) {}
+              scheduleReconnect();
+          }
+          return false;
+      }'''
+          new = '''        if (!ready || socket == null || sentSamples < MIN_COMMIT_SAMPLES) {
+              WebSocket failedSocket = null;
+              boolean clearFailed = ready && socket != null && !sendClearLocked();
+              sentSamples = 0;
+              activeBackup.clear();
+              partial.setLength(0);
+              listener.onPartial("");
+              if (clearFailed) {
+                  failedSocket = socket;
+                  socket = null;
+                  ready = false;
+                  awaitingCompletion = false;
+                  listener.onState("fallback");
+                  try { failedSocket.close(1011, "clear_failed"); } catch (Throwable ignored) {}
+                  scheduleReconnect();
+              }
+              return false;
+          }'''
+          if s.count(old) != 1:
+              raise SystemExit('commit block format mismatch')
+          s = s.replace(old, new, 1)
+          old = '''    private boolean sendClearLocked() {
+      if (socket == null) return false;
+      try {
+          JSONObject event = new JSONObject();
+          event.put("type", "input_audio_buffer.clear");
+          return socket.send(event.toString());
+      } catch (Throwable ignored) {
+          return false;
+      }
+  }'''
+          new = '''    private boolean sendClearLocked() {
+          if (socket == null) return false;
+          try {
+              JSONObject event = new JSONObject();
+              event.put("type", "input_audio_buffer.clear");
+              return socket.send(event.toString());
+          } catch (Throwable ignored) {
+              return false;
+          }
+      }'''
+          if s.count(old) != 1:
+              raise SystemExit('helper block format mismatch')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Commit formatting
+        run: |
+          git config user.name "opsa1895-gif"
+          git config user.email "opsa1895@gmail.com"
+          git add app/src/main/java/com/livecopilot/micprobe/RealtimeTranscriptionClient.java
+          git diff --cached --quiet && exit 1
+          git commit -m "style: format v0.49 realtime recovery"
+          git push origin HEAD:copilot-v0-49-clear-send-recovery
