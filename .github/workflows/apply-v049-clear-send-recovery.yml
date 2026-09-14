@@ -1,0 +1,88 @@
+name: Apply v0.49 clear send recovery
+
+on:
+  push:
+    branches:
+      - copilot-v0-49-clear-send-recovery
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: copilot-v0-49-clear-send-recovery
+      - name: Patch clear recovery
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/livecopilot/micprobe/RealtimeTranscriptionClient.java')
+          s = p.read_text()
+          old = '''        if (!ready || socket == null || sentSamples < MIN_COMMIT_SAMPLES) {
+              sentSamples = 0;
+              activeBackup.clear();
+              sendClearLocked();
+              return false;
+          }'''
+          new = '''        if (!ready || socket == null || sentSamples < MIN_COMMIT_SAMPLES) {
+              WebSocket failedSocket = null;
+              boolean clearFailed = ready && socket != null && !sendClearLocked();
+              sentSamples = 0;
+              activeBackup.clear();
+              partial.setLength(0);
+              listener.onPartial("");
+              if (clearFailed) {
+                  failedSocket = socket;
+                  socket = null;
+                  ready = false;
+                  awaitingCompletion = false;
+                  listener.onState("fallback");
+                  try { failedSocket.close(1011, "clear_failed"); } catch (Throwable ignored) {}
+                  scheduleReconnect();
+              }
+              return false;
+          }'''
+          if s.count(old) != 1:
+              raise SystemExit('commit guard mismatch')
+          s = s.replace(old, new, 1)
+          old = '''    private synchronized void sendClearLocked() {
+              if (socket == null) return;
+              try {
+                  JSONObject event = new JSONObject();
+                  event.put("type", "input_audio_buffer.clear");
+                  socket.send(event.toString());
+              } catch (Throwable ignored) {}
+          }'''
+          new = '''    private boolean sendClearLocked() {
+              if (socket == null) return false;
+              try {
+                  JSONObject event = new JSONObject();
+                  event.put("type", "input_audio_buffer.clear");
+                  return socket.send(event.toString());
+              } catch (Throwable ignored) {
+                  return false;
+              }
+          }'''
+          if s.count(old) != 1:
+              raise SystemExit('clear helper mismatch')
+          p.write_text(s.replace(old, new, 1))
+          g = Path('app/build.gradle.kts')
+          t = g.read_text()
+          if t.count('versionCode = 49') != 1 or t.count('versionName = "0.48.0-contiguous-fallback-audio"') != 1:
+              raise SystemExit('version mismatch')
+          t = t.replace('versionCode = 49', 'versionCode = 50', 1)
+          t = t.replace('versionName = "0.48.0-contiguous-fallback-audio"', 'versionName = "0.49.0-clear-send-recovery"', 1)
+          g.write_text(t)
+          PY
+      - name: Commit source changes
+        run: |
+          git config user.name "opsa1895-gif"
+          git config user.email "opsa1895@gmail.com"
+          git add app/build.gradle.kts app/src/main/java/com/livecopilot/micprobe/RealtimeTranscriptionClient.java
+          git diff --cached --quiet && exit 1
+          git commit -m "fix: recover when realtime clear send fails"
+          git push origin HEAD:copilot-v0-49-clear-send-recovery
