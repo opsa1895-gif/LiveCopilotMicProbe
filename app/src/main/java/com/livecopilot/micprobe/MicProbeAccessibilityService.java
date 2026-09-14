@@ -23,7 +23,6 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private static final String UI_PREFS = "live_copilot_ui";
     private static final long CONTEXT_RESET_AFTER_PAUSE_MS = 90_000L;
     private static final long SEMANTIC_CONTEXT_IDLE_RESET_MS = 45_000L;
-    private static final long SEMANTIC_MIN_GAP_MS = 2_500L;
     private static final long SEMANTIC_FOCUS_MAX_AGE_MS = 12_000L;
     private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     private static final long SELF_ECHO_WINDOW_MS = 12_000L;
@@ -378,9 +377,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             return;
         }
 
-        long wait = Math.max(0L, SEMANTIC_MIN_GAP_MS - (now - lastSemanticRequestAtMs));
         String focusSnapshot = pendingSemanticFocus;
         long focusTimeSnapshot = pendingSemanticAtMs;
+        long minGapMs = SemanticSchedulingPolicy.minGapMs(focusSnapshot);
+        long wait = Math.max(0L, minGapMs - (now - lastSemanticRequestAtMs));
         if (wait > 0L) {
             overlay.postDelayed(() -> {
                 if (focusSnapshot.equals(pendingSemanticFocus)
@@ -399,7 +399,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         long now = System.currentTimeMillis();
         if (focus == null || focus.isEmpty() || now - focusAtMs > SEMANTIC_FOCUS_MAX_AGE_MS) return;
         if (answerUpdatedAtMs >= focusAtMs) return;
-        if (now - lastSemanticRequestAtMs < SEMANTIC_MIN_GAP_MS) return;
+        if (now - lastSemanticRequestAtMs < SemanticSchedulingPolicy.minGapMs(focus)) return;
 
         lastSemanticRequestAtMs = now;
         semanticAnswerBaselineMs = answerUpdatedAtMs;
