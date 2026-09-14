@@ -168,9 +168,21 @@ final class RealtimeTranscriptionClient {
         if (!turnActive) return false;
         turnActive = false;
         if (!ready || socket == null || sentSamples < MIN_COMMIT_SAMPLES) {
+            WebSocket failedSocket = null;
+            boolean clearFailed = ready && socket != null && !sendClearLocked();
             sentSamples = 0;
             activeBackup.clear();
-            sendClearLocked();
+            partial.setLength(0);
+            listener.onPartial("");
+            if (clearFailed) {
+                failedSocket = socket;
+                socket = null;
+                ready = false;
+                awaitingCompletion = false;
+                listener.onState("fallback");
+                try { failedSocket.close(1011, "clear_failed"); } catch (Throwable ignored) {}
+                scheduleReconnect();
+            }
             return false;
         }
 
@@ -604,13 +616,15 @@ final class RealtimeTranscriptionClient {
         return out;
     }
 
-    private synchronized void sendClearLocked() {
-        if (socket == null) return;
+    private boolean sendClearLocked() {
+        if (socket == null) return false;
         try {
             JSONObject event = new JSONObject();
             event.put("type", "input_audio_buffer.clear");
-            socket.send(event.toString());
-        } catch (Throwable ignored) {}
+            return socket.send(event.toString());
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private void clearPendingBackupLocked(long turn) {
