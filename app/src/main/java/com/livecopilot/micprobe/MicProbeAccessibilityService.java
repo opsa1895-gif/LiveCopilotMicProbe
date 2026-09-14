@@ -26,6 +26,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private static final long SEMANTIC_MIN_GAP_MS = 4_000L;
     private static final long SEMANTIC_FOCUS_MAX_AGE_MS = 12_000L;
     private static final long LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
+    private static final long SELF_ECHO_WINDOW_MS = 12_000L;
     private static final int SEMANTIC_CONTEXT_TURNS = 6;
     private static final int MAX_FALLBACK_AUDIO_SAMPLES = 16_000 * 12;
 
@@ -70,6 +71,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private long pendingSemanticAtMs;
     private long lastSemanticRequestAtMs;
     private long lastSemanticTranscriptAtMs;
+    private long lastSelfEchoAtMs;
     private long semanticAnswerBaselineMs;
     private long semanticPrimaryAppliedAtMs;
     private long activeSemanticRequestId = -1L;
@@ -235,6 +237,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         }
 
         lastTranscript = clean;
+        if (!clean.isEmpty() && isLikelySelfEcho(clean, now)) {
+            lastSelfEchoAtMs = now;
+            pendingSemanticFocus = "";
+            aiStatus = "Слушам";
+            renderStatus();
+            renderDebug();
+            return;
+        }
         if (!clean.isEmpty()) {
             if (semanticFallback != null && activeSemanticRequestId >= 0L) {
                 semanticFallback.invalidate();
@@ -406,6 +416,18 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         renderDebug();
     }
 
+    private boolean isLikelySelfEcho(String transcript, long now) {
+        if (currentReplies == null || answerUpdatedAtMs <= 0L) return false;
+        long age = now - answerUpdatedAtMs;
+        if (age < 0L || age > SELF_ECHO_WINDOW_MS) return false;
+        return SelfEchoFilter.matchesAny(
+                transcript,
+                currentReplies.direct,
+                currentReplies.sarcastic,
+                currentReplies.funny,
+                currentReplies.calm);
+    }
+
     private String buildSemanticContext() {
         StringBuilder out = new StringBuilder();
         for (String turn : semanticTurns) {
@@ -571,6 +593,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             pendingSemanticAtMs = 0L;
             lastSemanticRequestAtMs = 0L;
             lastSemanticTranscriptAtMs = 0L;
+            lastSelfEchoAtMs = 0L;
             semanticAnswerBaselineMs = 0L;
             semanticPrimaryAppliedAtMs = 0L;
             activeSemanticRequestId = -1L;
@@ -652,7 +675,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 + " • text→1st " + latencyLabel(lastFirstReplyLatencyMs)
                 + " • styles " + latencyLabel(lastStylesLatencyMs)
                 + " • sem " + latencyLabel(lastSemanticLatencyMs);
-        debugText.setText(app + " • " + mic + rt + heard + partial + latency);
+        String echo = lastSelfEchoAtMs > 0L
+                && System.currentTimeMillis() - lastSelfEchoAtMs < 5_000L ? " • echo" : "";
+        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency);
     }
 
     private void resetLatencyMetrics() {

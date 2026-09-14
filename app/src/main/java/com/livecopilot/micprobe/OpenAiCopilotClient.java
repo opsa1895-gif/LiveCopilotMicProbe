@@ -83,6 +83,7 @@ final class OpenAiCopilotClient {
     private static final long CONTEXT_IDLE_RESET_MS = 45_000L;
     private static final long ENGAGEMENT_GAP_MS = 12_000L;
     private static final long MAX_REPLY_AGE_MS = 12_000L;
+    private static final long SELF_ECHO_WINDOW_MS = 12_000L;
 
     private final Context context;
     private final Listener listener;
@@ -103,6 +104,9 @@ final class OpenAiCopilotClient {
     private long lastTranscriptAtMs;
     private String summary = "";
     private String lastDirectReply = "";
+    private String lastSarcasticReply = "";
+    private String lastFunnyReply = "";
+    private String lastCalmReply = "";
 
     OpenAiCopilotClient(Context context, Listener listener) {
         this.context = context.getApplicationContext();
@@ -117,6 +121,9 @@ final class OpenAiCopilotClient {
         recentTurns.clear();
         summary = "";
         lastDirectReply = "";
+        lastSarcasticReply = "";
+        lastFunnyReply = "";
+        lastCalmReply = "";
         lastReplyAtMs = 0L;
         firstSpeechAtMs = 0L;
         lastTranscriptAtMs = 0L;
@@ -177,6 +184,10 @@ final class OpenAiCopilotClient {
             }
 
             listener.onTranscript(focus);
+            if (isRecentSelfEcho(focus, now)) {
+                listener.onStatus("Слушам");
+                return;
+            }
             synchronized (this) {
                 if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
             }
@@ -207,6 +218,9 @@ final class OpenAiCopilotClient {
         recentTurns.clear();
         summary = "";
         lastDirectReply = "";
+        lastSarcasticReply = "";
+        lastFunnyReply = "";
+        lastCalmReply = "";
         lastReplyAtMs = 0L;
         firstSpeechAtMs = 0L;
         pendingReply = null;
@@ -279,6 +293,9 @@ final class OpenAiCopilotClient {
 
             synchronized (this) {
                 lastDirectReply = primary;
+                lastSarcasticReply = "";
+                lastFunnyReply = "";
+                lastCalmReply = "";
                 lastReplyAtMs = System.currentTimeMillis();
             }
             listener.onReplies(new Replies(primary, "", "", ""));
@@ -292,6 +309,9 @@ final class OpenAiCopilotClient {
             String direct = primary.isEmpty() ? local.direct : primary;
             synchronized (this) {
                 lastDirectReply = direct;
+                lastSarcasticReply = local.sarcastic;
+                lastFunnyReply = local.funny;
+                lastCalmReply = local.calm;
                 lastReplyAtMs = System.currentTimeMillis();
             }
             listener.onReplies(new Replies(direct, local.sarcastic, local.funny, local.calm));
@@ -313,11 +333,19 @@ final class OpenAiCopilotClient {
             if (!current(job)) return;
             synchronized (this) {
                 if (!complete.direct.isEmpty()) lastDirectReply = complete.direct;
+                lastSarcasticReply = complete.sarcastic;
+                lastFunnyReply = complete.funny;
+                lastCalmReply = complete.calm;
             }
             listener.onReplies(complete);
         } catch (Throwable ignored) {
             if (!current(job)) return;
             ReplyGenerator.Replies local = ReplyGenerator.generate(job.context, job.focus);
+            synchronized (this) {
+                lastSarcasticReply = local.sarcastic;
+                lastFunnyReply = local.funny;
+                lastCalmReply = local.calm;
+            }
             listener.onReplies(new Replies(primary, local.sarcastic, local.funny, local.calm));
         }
     }
@@ -327,6 +355,17 @@ final class OpenAiCopilotClient {
                 && job.sessionSerial == sessionSerial
                 && job.serial == latestReplySerial
                 && System.currentTimeMillis() - job.createdAtMs <= MAX_REPLY_AGE_MS;
+    }
+
+    private synchronized boolean isRecentSelfEcho(String focus, long now) {
+        if (lastReplyAtMs <= 0L || now < lastReplyAtMs
+                || now - lastReplyAtMs > SELF_ECHO_WINDOW_MS) return false;
+        return SelfEchoFilter.matchesAny(
+                focus,
+                lastDirectReply,
+                lastSarcasticReply,
+                lastFunnyReply,
+                lastCalmReply);
     }
 
     private synchronized boolean isCurrentSession(long serial) {
