@@ -29,7 +29,7 @@ final class SelfEchoFilter {
             String suggested = normalize(candidate);
             if (suggested.isEmpty()) continue;
 
-            String tail = meaningfulTailAfterSuggestion(heard, suggested);
+            String tail = meaningfulTailAfterSuggestion(original, heard, suggested);
             if (tail != null) return tail;
 
             if (matchesNormalized(heard, suggested)) return "";
@@ -37,7 +37,7 @@ final class SelfEchoFilter {
         return original;
     }
 
-    private static String meaningfulTailAfterSuggestion(String heard, String suggested) {
+    private static String meaningfulTailAfterSuggestion(String original, String heard, String suggested) {
         List<String> heardWords = words(heard);
         List<String> suggestedWords = words(suggested);
         if (heardWords.size() < 4 || suggestedWords.size() < 3) return null;
@@ -47,7 +47,20 @@ final class SelfEchoFilter {
 
         List<String> tailWords = heardWords.subList(consumed, heardWords.size());
         if (!isMeaningfulNovelTail(tailWords)) return null;
-        return join(tailWords);
+        return originalTailAfterWords(original, consumed);
+    }
+
+    private static String originalTailAfterWords(String original, int consumedWords) {
+        if (original == null || original.isEmpty() || consumedWords < 0) return "";
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("[\p{L}\p{N}]+").matcher(original);
+        int seen = 0;
+        while (matcher.find()) {
+            if (seen == consumedWords) {
+                return clean(original.substring(matcher.start()));
+            }
+            seen++;
+        }
+        return "";
     }
 
     private static int matchedSuggestionPrefixLength(List<String> heard, List<String> suggested) {
