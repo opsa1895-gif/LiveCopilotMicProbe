@@ -501,13 +501,12 @@ final class RealtimeTranscriptionClient {
 
         List<String> recent = contextWindow.snapshot(System.currentTimeMillis());
         if (!recent.isEmpty()) {
-            out.append(" Предишен контекст: ");
-            for (int i = 0; i < recent.size(); i++) {
-                if (i > 0) out.append(" | ");
-                out.append(recent.get(i));
-                if (out.length() >= 640) break;
+            String prefix = " Предишен контекст: ";
+            int remaining = Math.max(0, 640 - out.length() - prefix.length() - 1);
+            String recentText = SttPromptContextPolicy.buildRecent(recent, remaining);
+            if (!recentText.isEmpty()) {
+                out.append(prefix).append(recentText).append('.');
             }
-            out.append('.');
         }
 
         if (out.length() > 650) return out.substring(0, 650);
