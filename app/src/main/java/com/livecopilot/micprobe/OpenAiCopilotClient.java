@@ -96,6 +96,7 @@ final class OpenAiCopilotClient {
     private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
     private final LatestWinsExecutor replyExecutor = new LatestWinsExecutor(2);
     private final ExecutorService variantExecutor = Executors.newSingleThreadExecutor();
+    private final HttpConnectionRegistry replyHttp = new HttpConnectionRegistry();
     private final Deque<AudioItem> audioQueue = new ArrayDeque<>();
     private final Deque<String> recentTurns = new ArrayDeque<>();
 
@@ -120,6 +121,7 @@ final class OpenAiCopilotClient {
 
     synchronized void resetSession() {
         sessionSerial++;
+        replyHttp.cancelAll();
         latestInputSerial = 0L;
         latestReplySerial++;
         audioQueue.clear();
@@ -140,6 +142,7 @@ final class OpenAiCopilotClient {
         // rather than waiting for its final transcript.
         latestInputSerial++;
         latestReplySerial++;
+        replyHttp.cancelAll();
     }
 
     synchronized void invalidatePendingWork() {
@@ -148,6 +151,7 @@ final class OpenAiCopilotClient {
         // queued/in-flight file STT and reply callback from before the pause stale.
         latestInputSerial++;
         latestReplySerial++;
+        replyHttp.cancelAll();
         audioQueue.clear();
     }
 
@@ -174,6 +178,7 @@ final class OpenAiCopilotClient {
             // and file-reply job stale for the live overlay.
             latestInputSerial++;
             latestReplySerial++;
+            replyHttp.cancelAll();
             if (firstSpeechAtMs == 0L) firstSpeechAtMs = now;
         }
     }
@@ -190,6 +195,7 @@ final class OpenAiCopilotClient {
         // External semantic replies must also invalidate older file-reply jobs and
         // seed file-STT self-echo suppression with what the user actually saw.
         latestReplySerial++;
+        replyHttp.cancelAll();
         if (!direct.isEmpty()) lastDirectReply = shorten(direct, 180);
 
         boolean primaryOnly = !direct.isEmpty()
@@ -214,6 +220,7 @@ final class OpenAiCopilotClient {
         long inputSerial = ++latestInputSerial;
         // New speech immediately invalidates reply work from older file audio.
         latestReplySerial++;
+        replyHttp.cancelAll();
         while (!audioQueue.isEmpty() && now - audioQueue.peekFirst().createdAtMs > MAX_AUDIO_AGE_MS) {
             audioQueue.removeFirst();
         }
@@ -322,6 +329,7 @@ final class OpenAiCopilotClient {
         lastReplyAtMs = 0L;
         firstSpeechAtMs = 0L;
         latestReplySerial++;
+        replyHttp.cancelAll();
     }
 
     private synchronized String commitTranscript(String raw, long now) {
@@ -357,6 +365,7 @@ final class OpenAiCopilotClient {
             // transcript can issue a fresh reply serial over the newer conversation.
             if (!isFreshAudioResultLocked(item)) return false;
             long serial = ++latestReplySerial;
+            replyHttp.cancelAll();
             job = new ReplyJob(serial, sessionSerial, contextTextLocked(), focus, lastDirectReply, engagement);
         }
         replyExecutor.execute(() -> processReply(job));
@@ -364,13 +373,14 @@ final class OpenAiCopilotClient {
     }
 
     private void processReply(ReplyJob job) {
+        if (!current(job)) return;
         String key = SecretStore.loadApiKey(context);
-        if (key.isEmpty()) return;
+        if (key.isEmpty() || !current(job)) return;
         String primary = "";
 
         try {
             listener.onStatus(job.sessionSerial, job.serial, true, "Мисля…");
-            primary = primaryReply(key, job.context, job.focus, job.previousSuggestion, job.engagement, false);
+            primary = primaryReply(key, job.context, job.focus, job.previousSuggestion, job.engagement, false, job);
             if (!current(job)) return;
             if (primary.isEmpty()) throw new IllegalStateException("empty primary");
 
@@ -415,7 +425,8 @@ final class OpenAiCopilotClient {
                     primary,
                     job.previousSuggestion,
                     job.engagement,
-                    varyDirect);
+                    varyDirect,
+                    job);
             if (!current(job)) return;
             synchronized (this) {
                 if (!complete.direct.isEmpty()) lastDirectReply = complete.direct;
@@ -478,6 +489,7 @@ final class OpenAiCopilotClient {
             latestReplySerial++;
             audioQueue.clear();
             }
+        replyHttp.cancelAll();
         audioExecutor.shutdownNow();
         replyExecutor.shutdownNow();
         variantExecutor.shutdownNow();
@@ -553,7 +565,7 @@ final class OpenAiCopilotClient {
 
     private String primaryReply(String key, String fullContext, String focus,
                                 String previousSuggestion, boolean engagement,
-                                boolean forceVariation) throws Exception {
+                                boolean forceVariation, ReplyJob job) throws Exception {
         String task = engagement
                 ? "Няма директен въпрос. Дай кратка естествена реплика за продължаване на темата или за включване на зрителите."
                 : "Отговори на последната смислена реплика или въпрос.";
@@ -569,14 +581,14 @@ final class OpenAiCopilotClient {
                 "<focus>\n" + focus + "\n</focus>\n" +
                 "<previous_suggestion>\n" + previousSuggestion + "\n</previous_suggestion>";
         HttpResult r = responses(key, request(system, user, 90),
-                PRIMARY_CONNECT_TIMEOUT_MS, PRIMARY_READ_TIMEOUT_MS, 1);
+                PRIMARY_CONNECT_TIMEOUT_MS, PRIMARY_READ_TIMEOUT_MS, 1, job);
         if (r.code < 200 || r.code >= 300) throw new IllegalStateException("reply " + r.code);
         return modelLine(extractText(new JSONObject(r.body)));
     }
 
     private Replies variants(String key, String fullContext, String focus, String direct,
                              String previousSuggestion, boolean engagement,
-                             boolean varyDirect) throws Exception {
+                             boolean varyDirect, ReplyJob job) throws Exception {
         String variation = varyDirect
                 ? " direct трябва да е осезаемо различен от previous_suggestion и от primary, но да отговаря на същия focus."
                 : " direct може да остане равен на primary.";
@@ -591,7 +603,7 @@ final class OpenAiCopilotClient {
                 "<previous_suggestion>\n" + previousSuggestion + "\n</previous_suggestion>\n" +
                 "<mode>" + (engagement ? "engagement" : "reply") + "</mode>";
         HttpResult r = responses(key, request(system, user, 250),
-                STYLE_CONNECT_TIMEOUT_MS, STYLE_READ_TIMEOUT_MS, 1);
+                STYLE_CONNECT_TIMEOUT_MS, STYLE_READ_TIMEOUT_MS, 1, job);
         if (r.code < 200 || r.code >= 300) throw new IllegalStateException("variants " + r.code);
 
         String text = extractText(new JSONObject(r.body)).trim();
@@ -635,14 +647,20 @@ final class OpenAiCopilotClient {
     }
 
     private HttpResult responses(String key, JSONObject req, int connectTimeoutMs,
-                                 int readTimeoutMs, int maxAttempts) throws Exception {
+                                 int readTimeoutMs, int maxAttempts, ReplyJob job) throws Exception {
         int attempts = Math.max(1, maxAttempts);
         Exception last = null;
         for (int attempt = 0; attempt < attempts; attempt++) {
+            HttpURLConnection c = null;
             try {
-                HttpURLConnection c = connection("https://api.openai.com/v1/responses", key, readTimeoutMs);
+                if (!current(job)) throw new java.io.InterruptedIOException("stale reply");
+                c = connection("https://api.openai.com/v1/responses", key, readTimeoutMs);
                 c.setConnectTimeout(Math.max(1_000, connectTimeoutMs));
                 c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                replyHttp.register(c);
+                // Covers the race where invalidation happened after the preflight but
+                // before this connection became visible to cancelAll().
+                if (!current(job)) throw new java.io.InterruptedIOException("stale reply");
                 c.getOutputStream().write(req.toString().getBytes(StandardCharsets.UTF_8));
                 int code = c.getResponseCode();
                 String body = read(c, code);
@@ -654,7 +672,13 @@ final class OpenAiCopilotClient {
                 return new HttpResult(code, body);
             } catch (Exception e) {
                 last = e;
+                if (!current(job)) throw e;
                 if (attempt + 1 < attempts) Thread.sleep(350L);
+            } finally {
+                if (c != null) {
+                    replyHttp.unregister(c);
+                    try { c.disconnect(); } catch (Throwable ignored) {}
+                }
             }
         }
         throw last == null ? new IllegalStateException("responses") : last;
