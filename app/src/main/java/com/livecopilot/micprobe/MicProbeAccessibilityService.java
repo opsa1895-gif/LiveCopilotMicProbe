@@ -20,6 +20,25 @@ import java.util.Deque;
 import java.util.Locale;
 
 public class MicProbeAccessibilityService extends AccessibilityService implements MicProbeEngine.Listener, OpenAiCopilotClient.Listener {
+    private enum AcceptedSttSource {
+        REALTIME("rt", true, true, true),
+        REALTIME_FILE_RECOVERY("rt-file", false, true, true),
+        FILE_PRIMARY("file", false, false, false);
+
+        final String label;
+        final boolean realtimeTransport;
+        final boolean bridgeToFileContext;
+        final boolean scheduleSemantic;
+
+        AcceptedSttSource(String label, boolean realtimeTransport,
+                          boolean bridgeToFileContext, boolean scheduleSemantic) {
+            this.label = label;
+            this.realtimeTransport = realtimeTransport;
+            this.bridgeToFileContext = bridgeToFileContext;
+            this.scheduleSemantic = scheduleSemantic;
+        }
+    }
+
     private static final String UI_PREFS = "live_copilot_ui";
     private static final long CONTEXT_RESET_AFTER_PAUSE_MS = 90_000L;
     private static final long SEMANTIC_CONTEXT_IDLE_RESET_MS = 45_000L;
@@ -75,6 +94,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private long lastRealtimeTranscriptAtMs;
     private long lastAcceptedSourceAtMs;
     private boolean lastAcceptedFromRealtime;
+    private String lastAcceptedSttSource = "—";
+    private String lastTurnSttRoute = "—";
+    private int acceptedRealtimeTranscripts;
+    private int acceptedRealtimeRecoveryTranscripts;
+    private int acceptedPrimaryFileTranscripts;
     private long answerUpdatedAtMs;
     private long pausedAtMs;
     private long pendingSemanticAtMs;
@@ -140,8 +164,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             }
 
             @Override
-            public void onFinal(long turnSerial, long speechEpoch, String transcript) {
-                getMainExecutor().execute(() -> handleRealtimeFinal(turnSerial, speechEpoch, transcript));
+            public void onFinal(long turnSerial, long speechEpoch,
+                                RealtimeTranscriptionClient.TranscriptSource source,
+                                String transcript) {
+                getMainExecutor().execute(() ->
+                        handleRealtimeFinal(turnSerial, speechEpoch, source, transcript));
             }
         });
         showOverlay();
@@ -227,6 +254,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 ? realtimeTranscriber.noteNewSpeech()
                 : -1L;
         realtimeTurnActive = realtimeTranscriber != null && realtimeTranscriber.beginTurn(sampleRate);
+        long routeBlockMs = realtimeTranscriber == null
+                ? 0L : realtimeTranscriber.routingBlockRemainingMs();
+        lastTurnSttRoute = realtimeTurnActive
+                ? "rt"
+                : (routeBlockMs > 0L ? "file-hyst" : "file");
         // Only turns that actually entered Realtime need a contiguous emergency
         // backup. Pure file-fallback turns keep using the chunk/overlap path.
         realtimeBackupStreaming = realtimeTurnActive;
@@ -299,7 +331,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private synchronized void handleFileTranscript(long sessionSerial, long inputSerial, String transcript) {
         if (aiClient == null || !aiClient.isTranscriptCallbackCurrent(sessionSerial, inputSerial)) return;
         if (engine == null || !engine.isRunning()) return;
-        acceptTranscript(transcript, false);
+        acceptTranscript(transcript, AcceptedSttSource.FILE_PRIMARY);
     }
 
     private synchronized void handleRealtimeState(long stateSerial, String state) {
@@ -317,17 +349,24 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         renderDebug();
     }
 
-    private synchronized void handleRealtimeFinal(long turnSerial, long speechEpoch, String transcript) {
+    private synchronized void handleRealtimeFinal(
+            long turnSerial, long speechEpoch,
+            RealtimeTranscriptionClient.TranscriptSource source, String transcript) {
         if (!RealtimeEventFreshnessPolicy.shouldAccept(speechEpoch, realtimeSpeechEpoch)) return;
         if (engine == null || !engine.isRunning()) return;
         if (turnSerial <= lastRealtimeTurnSerial) return;
         lastRealtimeTurnSerial = turnSerial;
         realtimeSpeechEpoch = -1L;
         realtimePartial = "";
-        acceptTranscript(transcript, true);
+        AcceptedSttSource acceptedSource = source == RealtimeTranscriptionClient.TranscriptSource.FILE_RECOVERY
+                ? AcceptedSttSource.REALTIME_FILE_RECOVERY
+                : AcceptedSttSource.REALTIME;
+        acceptTranscript(transcript, acceptedSource);
     }
 
-    private void acceptTranscript(String transcript, boolean fromRealtime) {
+    private void acceptTranscript(String transcript, AcceptedSttSource source) {
+        if (source == null) source = AcceptedSttSource.FILE_PRIMARY;
+        boolean fromRealtime = source.realtimeTransport;
         String clean = transcript == null ? "" : transcript.replace('\n', ' ').trim();
         long now = System.currentTimeMillis();
         if (TranscriptQualityPolicy.isLowQuality(clean)) {
@@ -379,7 +418,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastAcceptedSourceTranscript = sourceTranscript;
         lastAcceptedSourceAtMs = now;
         lastAcceptedFromRealtime = fromRealtime;
-        if (fromRealtime && !useful.isEmpty() && aiClient != null) {
+        if (source.bridgeToFileContext && !useful.isEmpty() && aiClient != null) {
             // Keep the file-reply lane on the same accepted conversation so a later
             // fallback does not behave as if the recent Realtime turns never happened.
             aiClient.rememberAcceptedTranscript(useful);
@@ -390,6 +429,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             realtimeTranscriber.rememberAcceptedTranscript(useful);
         }
         if (!useful.isEmpty()) {
+            recordAcceptedSttSource(source);
             semanticEpoch++;
             if (semanticFallback != null && activeSemanticRequestId >= 0L) {
                 semanticFallback.invalidate();
@@ -411,8 +451,23 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         }
 
         renderDebug();
-        if (fromRealtime && !useful.isEmpty()) {
+        if (source.scheduleSemantic && !useful.isEmpty()) {
             scheduleSemanticFallbackIfNeeded();
+        }
+    }
+
+    private void recordAcceptedSttSource(AcceptedSttSource source) {
+        lastAcceptedSttSource = source.label;
+        switch (source) {
+            case REALTIME:
+                acceptedRealtimeTranscripts++;
+                break;
+            case REALTIME_FILE_RECOVERY:
+                acceptedRealtimeRecoveryTranscripts++;
+                break;
+            default:
+                acceptedPrimaryFileTranscripts++;
+                break;
         }
     }
 
@@ -806,7 +861,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         overlay.addView(answerText);
 
         debugText = text("", 10, Color.LTGRAY);
-        debugText.setMaxLines(6);
+        debugText.setMaxLines(7);
         debugText.setEllipsize(TextUtils.TruncateAt.END);
         debugText.setPadding(0, dp(6), 0, 0);
         debugText.setVisibility(View.GONE);
@@ -982,8 +1037,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 ? "mic —"
                 : String.format(Locale.US, "mic %.0f dB%s", latestSnapshot.dbfs,
                 latestSnapshot.clientSilenced ? " • BLOCKED" : "");
+        long routeBlockMs = realtimeTranscriber == null
+                ? 0L : realtimeTranscriber.routingBlockRemainingMs();
+        int unstableRt = realtimeTranscriber == null
+                ? 0 : realtimeTranscriber.unstableReadyFailureStreak();
         String rt = " • RT " + realtimeState
-                + (realtimeStateSerial > 0L ? "@" + realtimeStateSerial : "");
+                + (realtimeStateSerial > 0L ? "@" + realtimeStateSerial : "")
+                + (unstableRt > 0 ? " • unstable×" + unstableRt : "")
+                + (routeBlockMs > 0L ? " • route-cd " + latencyLabel(routeBlockMs) : "");
         String heard = lastTranscript.isEmpty() ? "" : "\nЧух: " + shorten(lastTranscript, 115);
         String partial = realtimePartial.isEmpty() ? "" : "\nRT partial: " + shorten(realtimePartial, 100);
         String latency = "\n~end→text " + latencyLabel(lastSttLatencyMs)
@@ -991,6 +1052,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 + " • styles " + latencyLabel(lastStylesLatencyMs)
                 + " • sem " + latencyLabel(lastSemanticLatencyMs)
                 + " • file-drain " + latencyLabel(lastFileDrainLatencyMs);
+        String sourceStats = "\nSTT src " + lastAcceptedSttSource
+                + " • rt " + acceptedRealtimeTranscripts
+                + " • rt-file " + acceptedRealtimeRecoveryTranscripts
+                + " • file " + acceptedPrimaryFileTranscripts
+                + " • route " + lastTurnSttRoute;
         String fileConfidence = lastFileCoveragePercent < 0 ? ""
                 : "\nfile cov " + lastFileCoveragePercent + "% ("
                 + Math.max(0, lastFileSubmittedChunks - lastFileFailedChunks) + "/"
@@ -1009,7 +1075,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         String echo = lastSelfEchoAtMs > 0L
                 && System.currentTimeMillis() - lastSelfEchoAtMs < 5_000L ? " • echo" : "";
         debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency
-                + fileConfidence + semanticLifecycle);
+                + sourceStats + fileConfidence + semanticLifecycle);
     }
 
     private void resetLatencyMetrics() {
@@ -1031,6 +1097,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFileOtherDrops = 0;
         lastFileDegradedStreak = 0;
         lastFileRetryCooldownUntilMs = 0L;
+        lastAcceptedSttSource = "—";
+        lastTurnSttRoute = "—";
+        acceptedRealtimeTranscripts = 0;
+        acceptedRealtimeRecoveryTranscripts = 0;
+        acceptedPrimaryFileTranscripts = 0;
         lastSemanticTerminal = "";
         lastSemanticDecisionAttempts = 0;
     }

@@ -24,10 +24,15 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 
 final class RealtimeTranscriptionClient {
+    enum TranscriptSource {
+        REALTIME,
+        FILE_RECOVERY
+    }
+
     interface Listener {
         void onState(long stateSerial, String state);
         void onPartial(long speechEpoch, String partial);
-        void onFinal(long turnSerial, long speechEpoch, String transcript);
+        void onFinal(long turnSerial, long speechEpoch, TranscriptSource source, String transcript);
     }
 
     private static final String WS_URL = "wss://api.openai.com/v1/realtime?model=gpt-live-transcribe";
@@ -65,6 +70,9 @@ final class RealtimeTranscriptionClient {
     private long speechEpoch;
     private long committedSpeechEpoch;
     private long stateSerial;
+    private long readyAtMs;
+    private int unstableReadyFailureStreak;
+    private long routingBlockedUntilMs;
     private long latestRecoveryId;
     private int activeBackupSampleRate = 16_000;
     private int pendingBackupSampleRate = 16_000;
@@ -103,6 +111,9 @@ final class RealtimeTranscriptionClient {
         awaitingCompletion = false;
         sentSamples = 0;
         partial.setLength(0);
+        readyAtMs = 0L;
+        unstableReadyFailureStreak = 0;
+        routingBlockedUntilMs = 0L;
         clearBackupsLocked();
         WebSocket old = socket;
         socket = null;
@@ -119,7 +130,9 @@ final class RealtimeTranscriptionClient {
     }
 
     synchronized boolean beginTurn(int sourceSampleRate) {
-        if (!ready || socket == null || turnActive || awaitingCompletion || sourceSampleRate <= 0) return false;
+        long now = System.currentTimeMillis();
+        if (!RealtimeRoutingPolicy.shouldUseRealtime(ready, socket != null, now, routingBlockedUntilMs)
+                || turnActive || awaitingCompletion || sourceSampleRate <= 0) return false;
         turnActive = true;
         activeTurnSerial = ++serial;
         sentSamples = 0;
@@ -152,6 +165,7 @@ final class RealtimeTranscriptionClient {
         try { sent = failedSocket.send(event.toString()); }
         catch (Throwable t) { sent = false; }
         if (!sent) {
+            noteReadyFailureLocked();
             socket = null;
             turnActive = false;
             ready = false;
@@ -178,6 +192,7 @@ final class RealtimeTranscriptionClient {
             listener.onPartial(speechEpoch, "");
             if (clearFailed) {
                 failedSocket = socket;
+                noteReadyFailureLocked();
                 socket = null;
                 ready = false;
                 awaitingCompletion = false;
@@ -197,6 +212,7 @@ final class RealtimeTranscriptionClient {
         try { sent = failedSocket.send(event.toString()); }
         catch (Throwable t) { sent = false; }
         if (!sent) {
+            noteReadyFailureLocked();
             socket = null;
             sentSamples = 0;
             ready = false;
@@ -228,6 +244,15 @@ final class RealtimeTranscriptionClient {
 
     synchronized boolean isReady() {
         return ready && socket != null;
+    }
+
+    synchronized long routingBlockRemainingMs() {
+        if (routingBlockedUntilMs <= 0L) return 0L;
+        return Math.max(0L, routingBlockedUntilMs - System.currentTimeMillis());
+    }
+
+    synchronized int unstableReadyFailureStreak() {
+        return Math.max(0, unstableReadyFailureStreak);
     }
 
     synchronized void shutdown() {
@@ -280,6 +305,7 @@ final class RealtimeTranscriptionClient {
 
         reconnectScheduled = false;
         ready = true;
+        readyAtMs = System.currentTimeMillis();
         long stableGeneration = generation;
         scheduler.schedule(() -> markConnectionStable(ws, stableGeneration),
                 RealtimeReconnectPolicy.STABLE_RESET_MS, TimeUnit.MILLISECONDS);
@@ -325,7 +351,7 @@ final class RealtimeTranscriptionClient {
                 }
             }
             if (!transcript.isEmpty()) {
-                listener.onFinal(turn, completedSpeechEpoch, transcript);
+                listener.onFinal(turn, completedSpeechEpoch, TranscriptSource.REALTIME, transcript);
             } else {
                 recoverCommittedTurn(turn, fallbackGeneration, "empty");
             }
@@ -343,6 +369,7 @@ final class RealtimeTranscriptionClient {
                     recoveryGeneration = generation;
                 }
                 failedSocket = socket;
+                noteReadyFailureLocked();
                 socket = null;
                 ready = false;
                 turnActive = false;
@@ -366,6 +393,7 @@ final class RealtimeTranscriptionClient {
                 recoveryTurn = committedTurnSerial;
                 recoveryGeneration = generation;
             }
+            noteReadyFailureLocked();
             socket = null;
             ready = false;
             turnActive = false;
@@ -385,6 +413,7 @@ final class RealtimeTranscriptionClient {
                 recoveryTurn = committedTurnSerial;
                 recoveryGeneration = generation;
             }
+            noteReadyFailureLocked();
             socket = null;
             ready = false;
             turnActive = false;
@@ -407,6 +436,7 @@ final class RealtimeTranscriptionClient {
                 return;
             }
             awaitingCompletion = false;
+            noteReadyFailureLocked();
             ready = false;
             turnActive = false;
             partial.setLength(0);
@@ -456,7 +486,7 @@ final class RealtimeTranscriptionClient {
             if (!shouldDeliverRecovery(recoveryId, recoveryGeneration, queuedAtMs)) return;
 
             if (!transcript.isEmpty()) {
-                listener.onFinal(turn, recoverySpeechEpoch, transcript);
+                listener.onFinal(turn, recoverySpeechEpoch, TranscriptSource.FILE_RECOVERY, transcript);
             } else {
                 emitStateUnlessReady("fallback_failed");
             }
@@ -552,6 +582,7 @@ final class RealtimeTranscriptionClient {
 
         synchronized (this) {
             if (ws != socket || closed || !wanted) return;
+            noteReadyFailureLocked();
             socket = null;
             ready = false;
             turnActive = false;
@@ -579,9 +610,28 @@ final class RealtimeTranscriptionClient {
         listener.onState(serial, state);
     }
 
+    private void noteReadyFailureLocked() {
+        long now = System.currentTimeMillis();
+        if (RealtimeRoutingPolicy.isQuickFailure(
+                readyAtMs, now, RealtimeReconnectPolicy.STABLE_RESET_MS)) {
+            unstableReadyFailureStreak++;
+            long blockMs = RealtimeRoutingPolicy.blockMsForUnstableStreak(
+                    unstableReadyFailureStreak);
+            if (blockMs > 0L) {
+                routingBlockedUntilMs = Math.max(routingBlockedUntilMs, now + blockMs);
+            }
+        } else if (readyAtMs > 0L) {
+            unstableReadyFailureStreak = 0;
+            routingBlockedUntilMs = 0L;
+        }
+        readyAtMs = 0L;
+    }
+
     private synchronized void markConnectionStable(WebSocket ws, long stableGeneration) {
         if (closed || !wanted || generation != stableGeneration || socket != ws || !ready) return;
         reconnectAttempt = 0;
+        unstableReadyFailureStreak = 0;
+        routingBlockedUntilMs = 0L;
     }
 
     private synchronized void scheduleReconnect() {
