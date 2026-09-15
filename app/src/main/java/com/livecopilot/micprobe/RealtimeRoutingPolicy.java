@@ -20,6 +20,7 @@ final class RealtimeRoutingPolicy {
     static final long MAX_ROUTE_LATENCY_RISE_STEP_MS = 3_000L;
     static final long MAX_ROUTE_LATENCY_DROP_STEP_MS = 4_000L;
     static final int ROUTE_LATENCY_REGIME_CONFIRM_STREAK = 2;
+    static final int ROUTE_LATENCY_SETTLE_SAMPLES = 2;
     static final long ROUTE_PROBE_MIN_MS = 6_000L;
     static final long ROUTE_PROBE_DEFAULT_MS = 12_000L;
     static final long ROUTE_PROBE_MAX_MS = 20_000L;
@@ -108,7 +109,18 @@ final class RealtimeRoutingPolicy {
 
     static int nextRouteLatencyOutlierStreak(int currentDirection, int currentStreak,
                                              int nextDirection, boolean previousEvidenceFresh) {
-        if (nextDirection == 0) return 0;
+        if (nextDirection == 0) {
+            if (!previousEvidenceFresh) return 0;
+            if (currentDirection != 0
+                    && currentStreak >= ROUTE_LATENCY_REGIME_CONFIRM_STREAK) {
+                return ROUTE_LATENCY_SETTLE_SAMPLES;
+            }
+            if (currentDirection == 0 && currentStreak > 0) {
+                int safeSettle = Math.min(ROUTE_LATENCY_SETTLE_SAMPLES, currentStreak);
+                return Math.max(0, safeSettle - 1);
+            }
+            return 0;
+        }
         if (!previousEvidenceFresh || nextDirection != currentDirection) return 1;
         int safe = Math.max(0, Math.min(ROUTE_LATENCY_REGIME_CONFIRM_STREAK, currentStreak));
         return Math.min(ROUTE_LATENCY_REGIME_CONFIRM_STREAK, safe + 1);
@@ -116,6 +128,12 @@ final class RealtimeRoutingPolicy {
 
     static boolean isRouteLatencyRegimeChange(int direction, int outlierStreak) {
         return direction != 0 && outlierStreak >= ROUTE_LATENCY_REGIME_CONFIRM_STREAK;
+    }
+
+    static boolean isRouteLatencySettling(int direction, int outlierStreak) {
+        return direction == 0
+                && outlierStreak > 0
+                && outlierStreak <= ROUTE_LATENCY_SETTLE_SAMPLES;
     }
 
     static long regimeAwareRouteLatencySample(long currentEstimateMs, int currentSamples,
@@ -141,7 +159,8 @@ final class RealtimeRoutingPolicy {
                 currentEstimateMs, currentSamples, sampleMs, outlierDirection, outlierStreak);
         if (currentEstimateMs < 0L || currentSamples <= 0) return boundedSampleMs;
         long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, currentEstimateMs));
-        if (isRouteLatencyRegimeChange(outlierDirection, outlierStreak)) {
+        if (isRouteLatencyRegimeChange(outlierDirection, outlierStreak)
+                || isRouteLatencySettling(outlierDirection, outlierStreak)) {
             return routeLatencyRegimeMidpoint(safeEstimate, boundedSampleMs);
         }
         return Math.max(0L, (safeEstimate * 3L + boundedSampleMs + 2L) / 4L);
@@ -173,7 +192,8 @@ final class RealtimeRoutingPolicy {
         long boundedSampleMs = regimeAwareRouteLatencySample(
                 safeEstimate, currentSamples, sampleMs, outlierDirection, outlierStreak);
         long deviation;
-        if (isRouteLatencyRegimeChange(outlierDirection, outlierStreak)) {
+        if (isRouteLatencyRegimeChange(outlierDirection, outlierStreak)
+                || isRouteLatencySettling(outlierDirection, outlierStreak)) {
             long rebasedEstimateMs = routeLatencyRegimeMidpoint(safeEstimate, boundedSampleMs);
             deviation = Math.abs(boundedSampleMs - rebasedEstimateMs);
         } else {
