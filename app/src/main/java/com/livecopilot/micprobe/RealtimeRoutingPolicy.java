@@ -19,6 +19,7 @@ final class RealtimeRoutingPolicy {
     static final long MAX_ROUTE_LATENCY_SAMPLE_MS = 12_000L;
     static final long MAX_ROUTE_LATENCY_RISE_STEP_MS = 3_000L;
     static final long MAX_ROUTE_LATENCY_DROP_STEP_MS = 4_000L;
+    static final int ROUTE_LATENCY_REGIME_CONFIRM_STREAK = 2;
     static final long ROUTE_PROBE_MIN_MS = 6_000L;
     static final long ROUTE_PROBE_DEFAULT_MS = 12_000L;
     static final long ROUTE_PROBE_MAX_MS = 20_000L;
@@ -95,11 +96,49 @@ final class RealtimeRoutingPolicy {
                 && boundedRouteLatencySample(currentEstimateMs, currentSamples, sampleMs) != sampleMs;
     }
 
-    static long nextRouteLatencyEstimate(long currentEstimateMs, int currentSamples,
-                                         long sampleMs) {
-        if (sampleMs < 0L) return currentEstimateMs;
+    static int routeLatencyOutlierDirection(long currentEstimateMs, int currentSamples,
+                                            long sampleMs) {
+        if (sampleMs < 0L || currentEstimateMs < 0L || currentSamples <= 0) return 0;
         long boundedSampleMs = boundedRouteLatencySample(
                 currentEstimateMs, currentSamples, sampleMs);
+        if (sampleMs > boundedSampleMs) return 1;
+        if (sampleMs < boundedSampleMs) return -1;
+        return 0;
+    }
+
+    static int nextRouteLatencyOutlierStreak(int currentDirection, int currentStreak,
+                                             int nextDirection, boolean previousEvidenceFresh) {
+        if (nextDirection == 0) return 0;
+        if (!previousEvidenceFresh || nextDirection != currentDirection) return 1;
+        int safe = Math.max(0, Math.min(ROUTE_LATENCY_REGIME_CONFIRM_STREAK, currentStreak));
+        return Math.min(ROUTE_LATENCY_REGIME_CONFIRM_STREAK, safe + 1);
+    }
+
+    static boolean isRouteLatencyRegimeChange(int direction, int outlierStreak) {
+        return direction != 0 && outlierStreak >= ROUTE_LATENCY_REGIME_CONFIRM_STREAK;
+    }
+
+    static long regimeAwareRouteLatencySample(long currentEstimateMs, int currentSamples,
+                                              long sampleMs, int outlierDirection,
+                                              int outlierStreak) {
+        if (sampleMs < 0L) return sampleMs;
+        if (isRouteLatencyRegimeChange(outlierDirection, outlierStreak)) {
+            return Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, sampleMs);
+        }
+        return boundedRouteLatencySample(currentEstimateMs, currentSamples, sampleMs);
+    }
+
+    static long nextRouteLatencyEstimate(long currentEstimateMs, int currentSamples,
+                                         long sampleMs) {
+        return nextRouteLatencyEstimate(currentEstimateMs, currentSamples, sampleMs, 0, 0);
+    }
+
+    static long nextRouteLatencyEstimate(long currentEstimateMs, int currentSamples,
+                                         long sampleMs, int outlierDirection,
+                                         int outlierStreak) {
+        if (sampleMs < 0L) return currentEstimateMs;
+        long boundedSampleMs = regimeAwareRouteLatencySample(
+                currentEstimateMs, currentSamples, sampleMs, outlierDirection, outlierStreak);
         if (currentEstimateMs < 0L || currentSamples <= 0) return boundedSampleMs;
         long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, currentEstimateMs));
         return Math.max(0L, (safeEstimate * 3L + boundedSampleMs + 2L) / 4L);
@@ -118,11 +157,18 @@ final class RealtimeRoutingPolicy {
 
     static long nextRouteLatencyJitter(long currentJitterMs, long currentEstimateMs,
                                        int currentSamples, long sampleMs) {
+        return nextRouteLatencyJitter(
+                currentJitterMs, currentEstimateMs, currentSamples, sampleMs, 0, 0);
+    }
+
+    static long nextRouteLatencyJitter(long currentJitterMs, long currentEstimateMs,
+                                       int currentSamples, long sampleMs,
+                                       int outlierDirection, int outlierStreak) {
         if (sampleMs < 0L) return currentJitterMs;
         if (currentEstimateMs < 0L || currentSamples <= 0) return 0L;
         long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, currentEstimateMs));
-        long boundedSampleMs = boundedRouteLatencySample(
-                safeEstimate, currentSamples, sampleMs);
+        long boundedSampleMs = regimeAwareRouteLatencySample(
+                safeEstimate, currentSamples, sampleMs, outlierDirection, outlierStreak);
         long deviation = Math.abs(boundedSampleMs - safeEstimate);
         if (currentSamples <= 1 || currentJitterMs < 0L) {
             return Math.min(MAX_ROUTE_LATENCY_JITTER_MS, deviation);
