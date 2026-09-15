@@ -91,6 +91,7 @@ final class RealtimeTranscriptionClient {
     private String lastRouteDecisionLabel = "file";
     private String lastRouteDecisionReason = "rt-unavailable";
     private int routeFlapScore;
+    private int previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
     private int lastPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
     private long lastPerformanceRouteDecisionAtMs;
     private long transportBlockedUntilMs;
@@ -154,6 +155,7 @@ final class RealtimeTranscriptionClient {
         lastRouteDecisionLabel = "file";
         lastRouteDecisionReason = "rt-unavailable";
         routeFlapScore = 0;
+        previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
         lastPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
         lastPerformanceRouteDecisionAtMs = 0L;
         transportBlockedUntilMs = 0L;
@@ -417,10 +419,15 @@ final class RealtimeTranscriptionClient {
 
     private void notePerformanceRouteDecisionLocked(int route, String reason, long nowMs) {
         if (!RealtimeRoutingPolicy.isTrackableRouteDecisionReason(reason)) return;
-        routeFlapScore = RealtimeRoutingPolicy.nextRouteFlapScore(
-                routeFlapScore, lastPerformanceRoute, lastPerformanceRouteDecisionAtMs,
-                route, nowMs);
-        lastPerformanceRoute = route;
+        routeFlapScore = RealtimeRoutingPolicy.nextRouteFlapScoreFromHistory(
+                routeFlapScore, previousPerformanceRoute, lastPerformanceRoute,
+                lastPerformanceRouteDecisionAtMs, route, nowMs);
+        if (lastPerformanceRoute == RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN) {
+            lastPerformanceRoute = route;
+        } else if (route != lastPerformanceRoute) {
+            previousPerformanceRoute = lastPerformanceRoute;
+            lastPerformanceRoute = route;
+        }
         lastPerformanceRouteDecisionAtMs = nowMs;
     }
 
@@ -431,6 +438,11 @@ final class RealtimeTranscriptionClient {
         StringBuilder out = new StringBuilder("route why ").append(lastRouteDecisionReason)
                 .append(" • n ").append(realtimeRouteLatencySamples)
                 .append('/').append(fileRouteLatencySamples);
+        String routeHistory = RealtimeRoutingPolicy.performanceRouteHistoryLabel(
+                previousPerformanceRoute, lastPerformanceRoute);
+        if (!"-".equals(routeHistory)) {
+            out.append(" • hist ").append(routeHistory);
+        }
         if (activeFlapScore > 0) {
             out.append(" • flap×").append(activeFlapScore)
                     .append(" +").append(
