@@ -298,6 +298,54 @@ final class RealtimeRoutingPolicy {
         return Math.max(0, safe - 1);
     }
 
+    static int nextRouteFlapScoreFromHistory(
+            int currentScore, int previousDistinctRoute, int currentRoute,
+            long currentDecisionAtMs, int nextRoute, long nowMs) {
+        int safe = Math.max(0, Math.min(ROUTE_FLAP_MAX_SCORE, currentScore));
+        boolean currentRouteKnown = currentRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || currentRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        boolean nextRouteKnown = nextRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || nextRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        boolean currentFresh = currentDecisionAtMs > 0L
+                && nowMs >= currentDecisionAtMs
+                && nowMs - currentDecisionAtMs <= ROUTE_FLAP_WINDOW_MS;
+        if (!nextRouteKnown) return activeRouteFlapScore(safe, currentDecisionAtMs, nowMs);
+        if (!currentRouteKnown || !currentFresh) return 0;
+        if (nextRoute == currentRoute) return Math.max(0, safe - 1);
+        if (isRouteFlapReversal(previousDistinctRoute, currentRoute, nextRoute)) {
+            return Math.min(ROUTE_FLAP_MAX_SCORE, safe + 1);
+        }
+        return safe;
+    }
+
+    static boolean isRouteFlapReversal(
+            int previousDistinctRoute, int currentRoute, int nextRoute) {
+        boolean previousKnown = previousDistinctRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || previousDistinctRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        boolean currentKnown = currentRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || currentRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        boolean nextKnown = nextRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || nextRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        return previousKnown && currentKnown && nextKnown
+                && previousDistinctRoute != currentRoute
+                && nextRoute != currentRoute
+                && nextRoute == previousDistinctRoute;
+    }
+
+    static String performanceRouteHistoryLabel(int previousDistinctRoute, int currentRoute) {
+        String current = performanceRouteLabel(currentRoute);
+        if ("-".equals(current)) return current;
+        String previous = performanceRouteLabel(previousDistinctRoute);
+        if ("-".equals(previous) || previous.equals(current)) return current;
+        return previous + ">" + current;
+    }
+
+    private static String performanceRouteLabel(int route) {
+        if (route == ROUTE_PERFORMANCE_ROUTE_REALTIME) return "rt";
+        if (route == ROUTE_PERFORMANCE_ROUTE_FILE) return "file";
+        return "-";
+    }
+
     static long routeFlapExtraMarginMs(int routeFlapScore) {
         int safe = Math.max(0, Math.min(ROUTE_FLAP_MAX_SCORE, routeFlapScore));
         return Math.min(ROUTE_FLAP_MAX_EXTRA_MARGIN_MS,

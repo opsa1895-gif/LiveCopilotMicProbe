@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 83
-        versionName = "0.82.0-route-flap-damping"
+        versionCode = 84
+        versionName = "0.83.0-route-reversal-memory"
     }
 
     compileOptions {
