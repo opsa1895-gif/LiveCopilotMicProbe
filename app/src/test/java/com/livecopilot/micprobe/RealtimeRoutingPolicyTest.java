@@ -50,6 +50,14 @@ public class RealtimeRoutingPolicyTest {
     }
 
     @Test
+    public void slowLatencyRemainsActionableEvenWhenScoreIsSaturated() {
+        assertFalse(RealtimeRoutingPolicy.isSlowRealtimeLatency(-1L));
+        assertFalse(RealtimeRoutingPolicy.isSlowRealtimeLatency(3_000L));
+        assertTrue(RealtimeRoutingPolicy.isSlowRealtimeLatency(3_001L));
+        assertEquals(4, RealtimeRoutingPolicy.nextLatencyPenalty(4, 4_000L));
+    }
+
+    @Test
     public void stalePenaltiesDecayWithoutNewBadSignals() {
         assertEquals(4, RealtimeRoutingPolicy.decayedPenalty(4, 14_999L, 4));
         assertEquals(3, RealtimeRoutingPolicy.decayedPenalty(4, 15_000L, 4));

@@ -306,7 +306,6 @@ final class RealtimeTranscriptionClient {
         long now = System.currentTimeMillis();
         decayRoutingPenaltiesLocked(now);
 
-        int previousLatencyPenalty = routingLatencyPenalty;
         routingQualityPenalty = RealtimeRoutingPolicy.nextOutcomePenalty(
                 routingQualityPenalty, acceptedUseful, fileRecovery);
         if (!fileRecovery) {
@@ -327,8 +326,9 @@ final class RealtimeTranscriptionClient {
 
         int effectivePenalty = RealtimeRoutingPolicy.effectiveOutcomePenalty(
                 routingQualityPenalty, routingLatencyPenalty);
-        boolean latencyWorsened = routingLatencyPenalty > previousLatencyPenalty;
-        if (acceptedUseful && !fileRecovery && !latencyWorsened) {
+        boolean slowRealtimeLatency = !fileRecovery
+                && RealtimeRoutingPolicy.isSlowRealtimeLatency(latencyMs);
+        if (acceptedUseful && !fileRecovery && !slowRealtimeLatency) {
             if (effectivePenalty <= 0 || outcomeBlockedUntilMs <= now) {
                 outcomeBlockedUntilMs = 0L;
             }

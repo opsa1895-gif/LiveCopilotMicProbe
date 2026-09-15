@@ -57,6 +57,10 @@ final class RealtimeRoutingPolicy {
         return Math.min(MAX_LATENCY_PENALTY, safe + 2);
     }
 
+    static boolean isSlowRealtimeLatency(long latencyMs) {
+        return latencyMs > SLOW_REALTIME_LATENCY_MS;
+    }
+
     static int decayedPenalty(int currentPenalty, long idleMs, int maxPenalty) {
         int safe = clampPenalty(currentPenalty, maxPenalty);
         if (safe <= 0 || idleMs < PENALTY_DECAY_STEP_MS) return safe;
