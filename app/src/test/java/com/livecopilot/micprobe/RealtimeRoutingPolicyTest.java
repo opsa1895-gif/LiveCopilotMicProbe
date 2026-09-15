@@ -268,6 +268,70 @@ public class RealtimeRoutingPolicyTest {
     }
 
     @Test
+    public void repeatedSameDirectionOutliersConfirmRegimeChange() {
+        long estimate = 1_600L;
+        int samples = 3;
+
+        int firstDirection = RealtimeRoutingPolicy.routeLatencyOutlierDirection(
+                estimate, samples, 8_000L);
+        int firstStreak = RealtimeRoutingPolicy.nextRouteLatencyOutlierStreak(
+                0, 0, firstDirection, true);
+        long firstEstimate = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
+                estimate, samples, 8_000L, firstDirection, firstStreak);
+        assertEquals(1, firstDirection);
+        assertEquals(1, firstStreak);
+        assertFalse(RealtimeRoutingPolicy.isRouteLatencyRegimeChange(
+                firstDirection, firstStreak));
+        assertEquals(2_350L, firstEstimate);
+
+        int secondDirection = RealtimeRoutingPolicy.routeLatencyOutlierDirection(
+                firstEstimate, samples + 1, 8_000L);
+        int secondStreak = RealtimeRoutingPolicy.nextRouteLatencyOutlierStreak(
+                firstDirection, firstStreak, secondDirection, true);
+        long regimeEstimate = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
+                firstEstimate, samples + 1, 8_000L, secondDirection, secondStreak);
+        long ordinaryEstimate = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
+                firstEstimate, samples + 1, 8_000L);
+
+        assertEquals(1, secondDirection);
+        assertEquals(2, secondStreak);
+        assertTrue(RealtimeRoutingPolicy.isRouteLatencyRegimeChange(
+                secondDirection, secondStreak));
+        assertEquals(3_763L, regimeEstimate);
+        assertEquals(3_100L, ordinaryEstimate);
+        assertTrue(regimeEstimate > ordinaryEstimate);
+    }
+
+    @Test
+    public void inlierOrDirectionFlipBreaksRegimeStreak() {
+        assertEquals(0, RealtimeRoutingPolicy.routeLatencyOutlierDirection(
+                2_000L, 4, 3_000L));
+        assertEquals(0, RealtimeRoutingPolicy.nextRouteLatencyOutlierStreak(
+                1, 2, 0, true));
+
+        int downDirection = RealtimeRoutingPolicy.routeLatencyOutlierDirection(
+                8_000L, 4, 1_000L);
+        assertEquals(-1, downDirection);
+        assertEquals(1, RealtimeRoutingPolicy.nextRouteLatencyOutlierStreak(
+                1, 2, downDirection, true));
+    }
+
+    @Test
+    public void staleEvidenceCannotConfirmRegimeChange() {
+        assertEquals(1, RealtimeRoutingPolicy.nextRouteLatencyOutlierStreak(
+                1, 1, 1, false));
+        assertFalse(RealtimeRoutingPolicy.isRouteLatencyRegimeChange(1, 1));
+    }
+
+    @Test
+    public void confirmedRegimeStillHonorsAbsoluteLatencyCap() {
+        assertEquals(12_000L, RealtimeRoutingPolicy.regimeAwareRouteLatencySample(
+                1_600L, 3, Long.MAX_VALUE, 1, 2));
+        assertEquals(0L, RealtimeRoutingPolicy.regimeAwareRouteLatencySample(
+                8_000L, 3, 0L, -1, 2));
+    }
+
+    @Test
     public void riskAdjustedLatencyRejectsFastButSpikyFileLane() {
         long now = 100_000L;
         assertTrue(RealtimeRoutingPolicy.shouldPreferFileForLatency(
