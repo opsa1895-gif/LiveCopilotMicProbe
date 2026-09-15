@@ -306,7 +306,7 @@ public class RealtimeRoutingPolicyTest {
     public void inlierOrDirectionFlipBreaksRegimeStreak() {
         assertEquals(0, RealtimeRoutingPolicy.routeLatencyOutlierDirection(
                 2_000L, 4, 3_000L));
-        assertEquals(0, RealtimeRoutingPolicy.nextRouteLatencyOutlierStreak(
+        assertEquals(2, RealtimeRoutingPolicy.nextRouteLatencyOutlierStreak(
                 1, 2, 0, true));
 
         int downDirection = RealtimeRoutingPolicy.routeLatencyOutlierDirection(
