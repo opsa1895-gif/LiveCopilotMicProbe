@@ -341,7 +341,9 @@ final class RealtimeTranscriptionClient {
     }
 
     synchronized void notePrimaryFileTurnOutcome(boolean usable) {
-        if (closed || !wanted || usable) return;
+        if (closed || !wanted) return;
+        goodRealtimeStreak = 0;
+        if (usable) return;
         long now = System.currentTimeMillis();
         decayRoutingPenaltiesLocked(now);
         routingQualityPenalty = RealtimeRoutingPolicy.penaltyAfterBadFile(
@@ -359,6 +361,8 @@ final class RealtimeTranscriptionClient {
         long idleMs = now - lastRoutingSignalAtMs;
         if (idleMs < RealtimeRoutingPolicy.PENALTY_DECAY_STEP_MS) return;
 
+        // A long idle gap breaks the meaning of "consecutive" healthy turns.
+        goodRealtimeStreak = 0;
         routingQualityPenalty = RealtimeRoutingPolicy.decayedPenalty(
                 routingQualityPenalty, idleMs, RealtimeRoutingPolicy.MAX_OUTCOME_PENALTY);
         routingLatencyPenalty = RealtimeRoutingPolicy.decayedPenalty(
@@ -728,6 +732,7 @@ final class RealtimeTranscriptionClient {
 
     private void noteReadyFailureLocked() {
         long now = System.currentTimeMillis();
+        goodRealtimeStreak = 0;
         if (RealtimeRoutingPolicy.isQuickFailure(
                 readyAtMs, now, RealtimeReconnectPolicy.STABLE_RESET_MS)) {
             unstableReadyFailureStreak++;
