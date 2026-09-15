@@ -160,6 +160,38 @@ public class RealtimeRoutingPolicyTest {
     }
 
     @Test
+    public void adaptiveProbeCadenceTracksMarginAndJitter() {
+        assertEquals(6_000L, RealtimeRoutingPolicy.adaptiveRealtimeProbeIntervalMs(
+                2_400L, 100L, 1_700L, 100L));
+        assertEquals(12_000L, RealtimeRoutingPolicy.adaptiveRealtimeProbeIntervalMs(
+                3_200L, 400L, 1_700L, 200L));
+        assertEquals(20_000L, RealtimeRoutingPolicy.adaptiveRealtimeProbeIntervalMs(
+                4_200L, 200L, 1_400L, 100L));
+        assertEquals(6_000L, RealtimeRoutingPolicy.adaptiveRealtimeProbeIntervalMs(
+                4_200L, 1_000L, 1_400L, 700L));
+        assertEquals(0L, RealtimeRoutingPolicy.adaptiveRealtimeProbeIntervalMs(
+                2_000L, 100L, 1_700L, 100L));
+    }
+
+    @Test
+    public void adaptiveProbeReopensRealtimeAtDerivedDeadline() {
+        long realtimeSampleAt = 95_000L;
+        long fileSampleAt = 99_000L;
+        assertEquals(1_000L, RealtimeRoutingPolicy.realtimeProbeRemainingMs(
+                2_400L, 100L, 3, realtimeSampleAt,
+                1_700L, 100L, 3, fileSampleAt, 100_000L));
+        assertTrue(RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                2_400L, 100L, 3, realtimeSampleAt,
+                1_700L, 100L, 3, fileSampleAt, 100_000L));
+        assertEquals(0L, RealtimeRoutingPolicy.realtimeProbeRemainingMs(
+                2_400L, 100L, 3, realtimeSampleAt,
+                1_700L, 100L, 3, fileSampleAt, 101_000L));
+        assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                2_400L, 100L, 3, realtimeSampleAt,
+                1_700L, 100L, 3, fileSampleAt, 101_000L));
+    }
+
+    @Test
     public void jitterTracksRecentAbsoluteDeviationAndIsBounded() {
         long estimate = -1L;
         long jitter = -1L;

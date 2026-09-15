@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 73
-        versionName = "0.72.0-confidence-latency-routing"
+        versionCode = 74
+        versionName = "0.73.0-adaptive-route-probing"
     }
 
     compileOptions {
