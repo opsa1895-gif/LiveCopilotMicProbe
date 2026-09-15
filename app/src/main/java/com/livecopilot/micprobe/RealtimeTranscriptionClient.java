@@ -77,9 +77,11 @@ final class RealtimeTranscriptionClient {
     private int goodRealtimeStreak;
     private long lastRoutingSignalAtMs;
     private long realtimeRouteLatencyEstimateMs = -1L;
+    private long realtimeRouteLatencyJitterMs = -1L;
     private int realtimeRouteLatencySamples;
     private long realtimeRouteLatencySampleAtMs;
     private long fileRouteLatencyEstimateMs = -1L;
+    private long fileRouteLatencyJitterMs = -1L;
     private int fileRouteLatencySamples;
     private long fileRouteLatencySampleAtMs;
     private String lastRouteDecisionLabel = "file";
@@ -130,9 +132,11 @@ final class RealtimeTranscriptionClient {
         goodRealtimeStreak = 0;
         lastRoutingSignalAtMs = 0L;
         realtimeRouteLatencyEstimateMs = -1L;
+        realtimeRouteLatencyJitterMs = -1L;
         realtimeRouteLatencySamples = 0;
         realtimeRouteLatencySampleAtMs = 0L;
         fileRouteLatencyEstimateMs = -1L;
+        fileRouteLatencyJitterMs = -1L;
         fileRouteLatencySamples = 0;
         fileRouteLatencySampleAtMs = 0L;
         lastRouteDecisionLabel = "file";
@@ -167,8 +171,9 @@ final class RealtimeTranscriptionClient {
         }
         if (turnActive || awaitingCompletion || sourceSampleRate <= 0) return false;
         if (RealtimeRoutingPolicy.shouldPreferFileForLatency(
-                realtimeRouteLatencyEstimateMs, realtimeRouteLatencySamples,
-                realtimeRouteLatencySampleAtMs, fileRouteLatencyEstimateMs,
+                realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
+                realtimeRouteLatencySamples, realtimeRouteLatencySampleAtMs,
+                fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
                 fileRouteLatencySamples, fileRouteLatencySampleAtMs, now)) {
             lastRouteDecisionLabel = "file-perf";
             return false;
@@ -338,6 +343,16 @@ final class RealtimeTranscriptionClient {
                 ? fileRouteLatencyEstimateMs : -1L;
     }
 
+    synchronized long realtimeRouteLatencyJitterMs() {
+        return realtimeRouteLatencySamples >= RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES
+                ? realtimeRouteLatencyJitterMs : -1L;
+    }
+
+    synchronized long fileRouteLatencyJitterMs() {
+        return fileRouteLatencySamples >= RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES
+                ? fileRouteLatencyJitterMs : -1L;
+    }
+
     synchronized String lastRouteDecisionLabel() {
         return lastRouteDecisionLabel;
     }
@@ -347,11 +362,16 @@ final class RealtimeTranscriptionClient {
         if (closed || !wanted) return;
         long now = System.currentTimeMillis();
         decayRoutingPenaltiesLocked(now);
-        if (!fileRecovery && latencyMs >= 0L) {
+        if (RealtimeRoutingPolicy.isRealtimePerformanceSampleEligible(
+                acceptedUseful, fileRecovery, latencyMs)) {
+            long previousEstimateMs = realtimeRouteLatencyEstimateMs;
+            int previousSamples = realtimeRouteLatencySamples;
+            realtimeRouteLatencyJitterMs = RealtimeRoutingPolicy.nextRouteLatencyJitter(
+                    realtimeRouteLatencyJitterMs, previousEstimateMs, previousSamples, latencyMs);
             realtimeRouteLatencyEstimateMs = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
-                    realtimeRouteLatencyEstimateMs, realtimeRouteLatencySamples, latencyMs);
+                    previousEstimateMs, previousSamples, latencyMs);
             realtimeRouteLatencySamples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(
-                    realtimeRouteLatencySamples, latencyMs);
+                    previousSamples, latencyMs);
             realtimeRouteLatencySampleAtMs = now;
         }
 
@@ -395,15 +415,20 @@ final class RealtimeTranscriptionClient {
         goodRealtimeStreak = 0;
         long now = System.currentTimeMillis();
         if (performanceEligible && drainLatencyMs >= 0L) {
+            long previousEstimateMs = fileRouteLatencyEstimateMs;
+            int previousSamples = fileRouteLatencySamples;
+            fileRouteLatencyJitterMs = RealtimeRoutingPolicy.nextRouteLatencyJitter(
+                    fileRouteLatencyJitterMs, previousEstimateMs, previousSamples, drainLatencyMs);
             fileRouteLatencyEstimateMs = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
-                    fileRouteLatencyEstimateMs, fileRouteLatencySamples, drainLatencyMs);
+                    previousEstimateMs, previousSamples, drainLatencyMs);
             fileRouteLatencySamples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(
-                    fileRouteLatencySamples, drainLatencyMs);
+                    previousSamples, drainLatencyMs);
             fileRouteLatencySampleAtMs = now;
         } else if (!performanceEligible) {
             // A degraded/cooldown file lane cannot keep winning on stale speed history,
             // even if its transcript coverage was still usable enough for context.
             fileRouteLatencyEstimateMs = -1L;
+            fileRouteLatencyJitterMs = -1L;
             fileRouteLatencySamples = 0;
             fileRouteLatencySampleAtMs = 0L;
         }

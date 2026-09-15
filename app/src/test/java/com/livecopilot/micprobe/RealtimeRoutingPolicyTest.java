@@ -145,18 +145,60 @@ public class RealtimeRoutingPolicyTest {
     }
 
     @Test
-    public void relativeLatencyNeedsEnoughFreshEvidenceAndMeaningfulMargin() {
+    public void relativeLatencyNeedsEnoughFreshConfidenceAndMeaningfulMargin() {
         long now = 100_000L;
         assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
-                2_500L, 1, 99_000L, 1_700L, 2, 99_000L, now));
+                2_500L, 100L, 2, 99_000L, 1_700L, 100L, 3, 99_000L, now));
         assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
-                2_399L, 2, 99_000L, 1_700L, 2, 99_000L, now));
+                2_399L, 100L, 3, 99_000L, 1_700L, 100L, 3, 99_000L, now));
         assertTrue(RealtimeRoutingPolicy.shouldPreferFileForLatency(
-                2_400L, 2, 99_000L, 1_700L, 2, 99_000L, now));
+                2_400L, 100L, 3, 99_000L, 1_700L, 100L, 3, 99_000L, now));
         assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
-                2_400L, 2, 79_999L, 1_700L, 2, 99_000L, now));
+                2_400L, 100L, 3, 79_999L, 1_700L, 100L, 3, 99_000L, now));
         assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
-                1_500L, 2, 99_000L, 1_700L, 2, 99_000L, now));
+                1_500L, 100L, 3, 99_000L, 1_700L, 100L, 3, 99_000L, now));
+    }
+
+    @Test
+    public void jitterTracksRecentAbsoluteDeviationAndIsBounded() {
+        long estimate = -1L;
+        long jitter = -1L;
+        int samples = 0;
+
+        jitter = RealtimeRoutingPolicy.nextRouteLatencyJitter(jitter, estimate, samples, 2_400L);
+        estimate = RealtimeRoutingPolicy.nextRouteLatencyEstimate(estimate, samples, 2_400L);
+        samples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(samples, 2_400L);
+        assertEquals(0L, jitter);
+
+        jitter = RealtimeRoutingPolicy.nextRouteLatencyJitter(jitter, estimate, samples, 1_600L);
+        estimate = RealtimeRoutingPolicy.nextRouteLatencyEstimate(estimate, samples, 1_600L);
+        samples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(samples, 1_600L);
+        assertEquals(800L, jitter);
+        assertEquals(2_200L, estimate);
+
+        jitter = RealtimeRoutingPolicy.nextRouteLatencyJitter(jitter, estimate, samples, 2_600L);
+        assertEquals(700L, jitter);
+        assertEquals(5_000L, RealtimeRoutingPolicy.nextRouteLatencyJitter(
+                5_000L, 1_000L, 3, 20_000L));
+    }
+
+    @Test
+    public void riskAdjustedLatencyRejectsFastButSpikyFileLane() {
+        long now = 100_000L;
+        assertTrue(RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                2_600L, 100L, 3, 99_000L, 1_600L, 100L, 3, 99_000L, now));
+        assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                2_600L, 100L, 3, 99_000L, 1_600L, 800L, 3, 99_000L, now));
+        assertEquals(2_700L, RealtimeRoutingPolicy.riskAdjustedRouteLatency(2_600L, 100L));
+        assertEquals(2_400L, RealtimeRoutingPolicy.riskAdjustedRouteLatency(1_600L, 800L));
+    }
+
+    @Test
+    public void realtimePerformanceSamplesRequireUsefulDirectText() {
+        assertTrue(RealtimeRoutingPolicy.isRealtimePerformanceSampleEligible(true, false, 1_500L));
+        assertFalse(RealtimeRoutingPolicy.isRealtimePerformanceSampleEligible(false, false, 1_000L));
+        assertFalse(RealtimeRoutingPolicy.isRealtimePerformanceSampleEligible(true, true, 1_000L));
+        assertFalse(RealtimeRoutingPolicy.isRealtimePerformanceSampleEligible(true, false, -1L));
     }
 
     @Test
