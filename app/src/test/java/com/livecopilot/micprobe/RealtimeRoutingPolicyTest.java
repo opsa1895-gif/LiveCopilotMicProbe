@@ -2,9 +2,9 @@ package com.livecopilot.micprobe;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.assertEquals;
 
 public class RealtimeRoutingPolicyTest {
     @Test
@@ -23,6 +23,50 @@ public class RealtimeRoutingPolicyTest {
         assertEquals(8_000L, RealtimeRoutingPolicy.blockMsForUnstableStreak(3));
         assertEquals(15_000L, RealtimeRoutingPolicy.blockMsForUnstableStreak(4));
         assertEquals(15_000L, RealtimeRoutingPolicy.blockMsForUnstableStreak(9));
+    }
+
+    @Test
+    public void transcriptOutcomesBuildAndRecoverPenalty() {
+        int penalty = 0;
+        penalty = RealtimeRoutingPolicy.nextOutcomePenalty(penalty, false, false);
+        assertEquals(1, penalty);
+        penalty = RealtimeRoutingPolicy.nextOutcomePenalty(penalty, true, true);
+        assertEquals(2, penalty);
+        penalty = RealtimeRoutingPolicy.nextOutcomePenalty(penalty, false, true);
+        assertEquals(4, penalty);
+        penalty = RealtimeRoutingPolicy.nextOutcomePenalty(penalty, true, false);
+        assertEquals(2, penalty);
+        penalty = RealtimeRoutingPolicy.nextOutcomePenalty(penalty, true, false);
+        assertEquals(0, penalty);
+    }
+
+    @Test
+    public void transcriptOutcomePenaltyUsesBoundedHold() {
+        assertEquals(0L, RealtimeRoutingPolicy.blockMsForOutcomePenalty(0));
+        assertEquals(2_000L, RealtimeRoutingPolicy.blockMsForOutcomePenalty(1));
+        assertEquals(5_000L, RealtimeRoutingPolicy.blockMsForOutcomePenalty(2));
+        assertEquals(10_000L, RealtimeRoutingPolicy.blockMsForOutcomePenalty(3));
+        assertEquals(15_000L, RealtimeRoutingPolicy.blockMsForOutcomePenalty(4));
+        assertEquals(15_000L, RealtimeRoutingPolicy.blockMsForOutcomePenalty(9));
+    }
+
+    @Test
+    public void badFileOutcomeAcceleratesRealtimeProbe() {
+        assertEquals(2, RealtimeRoutingPolicy.penaltyAfterBadFile(3));
+        assertEquals(0, RealtimeRoutingPolicy.penaltyAfterBadFile(0));
+        assertEquals(11_000L,
+                RealtimeRoutingPolicy.shortenBlockAfterBadFile(10_000L, 25_000L));
+        assertEquals(9_000L,
+                RealtimeRoutingPolicy.shortenBlockAfterBadFile(10_000L, 9_000L));
+    }
+
+    @Test
+    public void fileOutcomeNeedsUsefulFocusAndCoverage() {
+        assertTrue(RealtimeRoutingPolicy.isUsableFileOutcome(true, 4, 1, false));
+        assertFalse(RealtimeRoutingPolicy.isUsableFileOutcome(true, 3, 2, false));
+        assertFalse(RealtimeRoutingPolicy.isUsableFileOutcome(true, 3, 0, true));
+        assertFalse(RealtimeRoutingPolicy.isUsableFileOutcome(false, 3, 0, false));
+        assertFalse(RealtimeRoutingPolicy.isUsableFileOutcome(true, 0, 0, false));
     }
 
     @Test

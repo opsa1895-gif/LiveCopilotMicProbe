@@ -370,6 +370,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         String clean = transcript == null ? "" : transcript.replace('\n', ' ').trim();
         long now = System.currentTimeMillis();
         if (TranscriptQualityPolicy.isLowQuality(clean)) {
+            noteRoutingTranscriptOutcome(source, false);
             aiStatus = "Слушам";
             renderStatus();
             renderDebug();
@@ -429,6 +430,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             realtimeTranscriber.rememberAcceptedTranscript(useful);
         }
         if (!useful.isEmpty()) {
+            noteRoutingTranscriptOutcome(source, true);
             recordAcceptedSttSource(source);
             semanticEpoch++;
             if (semanticFallback != null && activeSemanticRequestId >= 0L) {
@@ -453,6 +455,15 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         renderDebug();
         if (source.scheduleSemantic && !useful.isEmpty()) {
             scheduleSemanticFallbackIfNeeded();
+        }
+    }
+
+    private void noteRoutingTranscriptOutcome(AcceptedSttSource source, boolean acceptedUseful) {
+        if (realtimeTranscriber == null || source == null) return;
+        if (source == AcceptedSttSource.REALTIME) {
+            realtimeTranscriber.noteRealtimeTranscriptOutcome(acceptedUseful, false);
+        } else if (source == AcceptedSttSource.REALTIME_FILE_RECOVERY) {
+            realtimeTranscriber.noteRealtimeTranscriptOutcome(acceptedUseful, true);
         }
     }
 
@@ -557,6 +568,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFileQualityDrops = Math.max(0, qualityDrops);
         lastFileOtherDrops = Math.max(0, otherDrops);
         lastFileDegradedStreak = Math.max(0, degradedTurnStreak);
+        boolean usableFileRoute = RealtimeRoutingPolicy.isUsableFileOutcome(
+                hasText(turnFocus), submittedChunks, failedChunks, lastChunkFailed);
+        if (realtimeTranscriber != null) {
+            realtimeTranscriber.notePrimaryFileTurnOutcome(usableFileRoute);
+        }
         long safeCooldownMs = Math.max(0L, retryCooldownRemainingMs);
         lastFileRetryCooldownUntilMs = safeCooldownMs > 0L
                 ? System.currentTimeMillis() + safeCooldownMs : 0L;
@@ -1041,9 +1057,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 ? 0L : realtimeTranscriber.routingBlockRemainingMs();
         int unstableRt = realtimeTranscriber == null
                 ? 0 : realtimeTranscriber.unstableReadyFailureStreak();
+        int routeOutcomePenalty = realtimeTranscriber == null
+                ? 0 : realtimeTranscriber.routingOutcomePenalty();
         String rt = " • RT " + realtimeState
                 + (realtimeStateSerial > 0L ? "@" + realtimeStateSerial : "")
                 + (unstableRt > 0 ? " • unstable×" + unstableRt : "")
+                + (routeOutcomePenalty > 0 ? " • outcome×" + routeOutcomePenalty : "")
                 + (routeBlockMs > 0L ? " • route-cd " + latencyLabel(routeBlockMs) : "");
         String heard = lastTranscript.isEmpty() ? "" : "\nЧух: " + shorten(lastTranscript, 115);
         String partial = realtimePartial.isEmpty() ? "" : "\nRT partial: " + shorten(realtimePartial, 100);
