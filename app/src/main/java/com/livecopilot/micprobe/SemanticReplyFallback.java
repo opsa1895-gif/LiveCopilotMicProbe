@@ -15,8 +15,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 final class SemanticReplyFallback {
+    enum TerminalState {
+        COMPLETE,
+        DIRECT_ONLY,
+        NO_REPLY,
+        FAILED
+    }
+
     interface Listener {
         void onDecision(long requestId, OpenAiCopilotClient.Replies replies);
+        void onFinished(long requestId, TerminalState state, int decisionAttempts);
     }
 
     private static final long MAX_REQUEST_AGE_MS = 12_000L;
@@ -76,8 +84,12 @@ final class SemanticReplyFallback {
     private void runDecision(long requestId, long createdAt, String rollingContext,
                              String focus, String previousSuggestion, boolean partialInput) {
         String key = SecretStore.loadApiKey(context);
-        if (key.isEmpty() || !isCurrent(requestId, createdAt)) return;
+        if (key.isEmpty()) {
+            finishIfCurrent(requestId, createdAt, TerminalState.FAILED, 0);
+            return;
+        }
 
+        int attempts = 0;
         try {
             JSONObject req = baseRequest(110);
             String system = "Ти си дискретен AI суфльор за TikTok Live. Реши дали последната реплика има естествена причина " +
@@ -98,35 +110,63 @@ final class SemanticReplyFallback {
                     "<previous_suggestion>\n" + shorten(previousSuggestion, 180) + "\n</previous_suggestion>";
             req.put("input", input(system, user));
 
-            HttpResult result = post(
-                    req, key, DECISION_CONNECT_TIMEOUT_MS, DECISION_READ_TIMEOUT_MS,
-                    decisionHttp, requestId, createdAt);
-            if (result.code < 200 || result.code >= 300 || !isCurrent(requestId, createdAt)) return;
+            HttpResult result = null;
+            while (attempts < SemanticFallbackPolicy.MAX_DECISION_ATTEMPTS) {
+                attempts++;
+                try {
+                    result = post(
+                            req, key, DECISION_CONNECT_TIMEOUT_MS, DECISION_READ_TIMEOUT_MS,
+                            decisionHttp, requestId, createdAt);
+                    if (result.code >= 200 && result.code < 300) break;
+                    if (!SemanticFallbackPolicy.shouldRetryHttp(result.code, attempts)) break;
+                } catch (Throwable error) {
+                    if (!isCurrent(requestId, createdAt)) return;
+                    if (!SemanticFallbackPolicy.shouldRetryFailure(error, attempts)) throw error;
+                }
+                if (!waitForRetry(requestId, createdAt, attempts + 1)) return;
+            }
+
+            if (result == null || result.code < 200 || result.code >= 300) {
+                finishIfCurrent(requestId, createdAt, TerminalState.FAILED, attempts);
+                return;
+            }
+            if (!isCurrent(requestId, createdAt)) return;
 
             JSONObject json = parseJsonText(result.body);
-            if (!json.optBoolean("should_reply", false)) return;
+            if (!json.optBoolean("should_reply", false)) {
+                finishIfCurrent(requestId, createdAt, TerminalState.NO_REPLY, attempts);
+                return;
+            }
             String direct = clean(json.optString("direct", ""));
-            if (direct.isEmpty()) return;
+            if (direct.isEmpty()) {
+                finishIfCurrent(requestId, createdAt, TerminalState.NO_REPLY, attempts);
+                return;
+            }
             direct = shorten(direct, 180);
 
             if (!isCurrent(requestId, createdAt)) return;
             listener.onDecision(requestId, new OpenAiCopilotClient.Replies(direct, "", "", ""));
 
-            // Partial STT turns stay direct-only. Generating playful variants from
-            // incomplete source text adds cost and increases the chance of filling gaps.
-            if (partialInput) return;
+            if (!SemanticFallbackPolicy.shouldGenerateVariants(partialInput)) {
+                finishIfCurrent(requestId, createdAt, TerminalState.DIRECT_ONLY, attempts);
+                return;
+            }
             String directCopy = direct;
+            int decisionAttempts = attempts;
             variantExecutor.execute(() -> runVariants(
-                    requestId, createdAt, rollingContext, focus, directCopy));
+                    requestId, createdAt, rollingContext, focus, directCopy, decisionAttempts));
         } catch (Throwable ignored) {
-            // If this path fails the current overlay answer stays visible.
+            finishIfCurrent(requestId, createdAt, TerminalState.FAILED, attempts);
         }
     }
 
     private void runVariants(long requestId, long createdAt, String rollingContext,
-                             String focus, String direct) {
+                             String focus, String direct, int decisionAttempts) {
         String key = SecretStore.loadApiKey(context);
-        if (key.isEmpty() || !isCurrent(requestId, createdAt)) return;
+        if (key.isEmpty()) {
+            finishIfCurrent(requestId, createdAt, TerminalState.DIRECT_ONLY, decisionAttempts);
+            return;
+        }
 
         try {
             JSONObject req = baseRequest(220);
@@ -143,7 +183,11 @@ final class SemanticReplyFallback {
             HttpResult result = post(
                     req, key, STYLE_CONNECT_TIMEOUT_MS, STYLE_READ_TIMEOUT_MS,
                     variantHttp, requestId, createdAt);
-            if (result.code < 200 || result.code >= 300 || !isCurrent(requestId, createdAt)) return;
+            if (!isCurrent(requestId, createdAt)) return;
+            if (result.code < 200 || result.code >= 300) {
+                finishIfCurrent(requestId, createdAt, TerminalState.DIRECT_ONLY, decisionAttempts);
+                return;
+            }
 
             JSONObject json = parseJsonText(result.body);
             OpenAiCopilotClient.Replies replies = new OpenAiCopilotClient.Replies(
@@ -151,10 +195,31 @@ final class SemanticReplyFallback {
                     fallback(json.optString("sarcastic"), direct),
                     fallback(json.optString("funny"), direct),
                     fallback(json.optString("calm"), direct));
-            if (isCurrent(requestId, createdAt)) listener.onDecision(requestId, replies);
+            if (!isCurrent(requestId, createdAt)) return;
+            listener.onDecision(requestId, replies);
+            finishIfCurrent(requestId, createdAt, TerminalState.COMPLETE, decisionAttempts);
         } catch (Throwable ignored) {
-            // Primary reply is already visible; style failure should not disturb it.
+            finishIfCurrent(requestId, createdAt, TerminalState.DIRECT_ONLY, decisionAttempts);
         }
+    }
+
+    private boolean waitForRetry(long requestId, long createdAt, int nextAttempt) {
+        if (!isCurrent(requestId, createdAt)) return false;
+        long delayMs = SemanticFallbackPolicy.retryDelayMs(nextAttempt);
+        if (delayMs > 0L) {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return isCurrent(requestId, createdAt);
+    }
+
+    private void finishIfCurrent(long requestId, long createdAt, TerminalState state, int attempts) {
+        if (!isCurrent(requestId, createdAt)) return;
+        listener.onFinished(requestId, state, Math.max(0, attempts));
     }
 
     private String hostStyle() {
