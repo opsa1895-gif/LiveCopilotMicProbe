@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 78
-        versionName = "0.77.0-post-regime-settle"
+        versionCode = 79
+        versionName = "0.78.0-confidence-aware-routing"
     }
 
     compileOptions {
