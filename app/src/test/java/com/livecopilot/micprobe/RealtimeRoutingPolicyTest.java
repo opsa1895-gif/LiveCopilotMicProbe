@@ -41,6 +41,50 @@ public class RealtimeRoutingPolicyTest {
     }
 
     @Test
+    public void latencyPenaltyTracksFastNeutralAndSlowRealtime() {
+        assertEquals(1, RealtimeRoutingPolicy.nextLatencyPenalty(2, 1_200L));
+        assertEquals(2, RealtimeRoutingPolicy.nextLatencyPenalty(2, 2_500L));
+        assertEquals(3, RealtimeRoutingPolicy.nextLatencyPenalty(2, 4_000L));
+        assertEquals(4, RealtimeRoutingPolicy.nextLatencyPenalty(2, 6_000L));
+        assertEquals(2, RealtimeRoutingPolicy.nextLatencyPenalty(2, -1L));
+    }
+
+    @Test
+    public void slowLatencyRemainsActionableEvenWhenScoreIsSaturated() {
+        assertFalse(RealtimeRoutingPolicy.isSlowRealtimeLatency(-1L));
+        assertFalse(RealtimeRoutingPolicy.isSlowRealtimeLatency(3_000L));
+        assertTrue(RealtimeRoutingPolicy.isSlowRealtimeLatency(3_001L));
+        assertEquals(4, RealtimeRoutingPolicy.nextLatencyPenalty(4, 4_000L));
+    }
+
+    @Test
+    public void stalePenaltiesDecayWithoutNewBadSignals() {
+        assertEquals(4, RealtimeRoutingPolicy.decayedPenalty(4, 14_999L, 4));
+        assertEquals(3, RealtimeRoutingPolicy.decayedPenalty(4, 15_000L, 4));
+        assertEquals(2, RealtimeRoutingPolicy.decayedPenalty(4, 30_000L, 4));
+        assertEquals(0, RealtimeRoutingPolicy.decayedPenalty(4, 60_000L, 4));
+    }
+
+    @Test
+    public void twoGoodRealtimeTurnsResetRecoveredHealth() {
+        int streak = RealtimeRoutingPolicy.nextGoodRealtimeStreak(0, true, false, 2_000L);
+        assertEquals(1, streak);
+        streak = RealtimeRoutingPolicy.nextGoodRealtimeStreak(streak, true, false, 1_200L);
+        assertEquals(2, streak);
+        assertTrue(RealtimeRoutingPolicy.shouldResetAfterGoodRealtime(streak));
+        assertEquals(0, RealtimeRoutingPolicy.nextGoodRealtimeStreak(streak, true, true, 1_000L));
+        assertEquals(0, RealtimeRoutingPolicy.nextGoodRealtimeStreak(streak, true, false, 4_000L));
+        assertEquals(0, RealtimeRoutingPolicy.nextGoodRealtimeStreak(streak, false, false, 1_000L));
+    }
+
+    @Test
+    public void effectiveOutcomePenaltyUsesWorseHealthSignal() {
+        assertEquals(3, RealtimeRoutingPolicy.effectiveOutcomePenalty(3, 1));
+        assertEquals(4, RealtimeRoutingPolicy.effectiveOutcomePenalty(2, 4));
+        assertEquals(0, RealtimeRoutingPolicy.effectiveOutcomePenalty(-1, 0));
+    }
+
+    @Test
     public void transcriptOutcomePenaltyUsesBoundedHold() {
         assertEquals(0L, RealtimeRoutingPolicy.blockMsForOutcomePenalty(0));
         assertEquals(2_000L, RealtimeRoutingPolicy.blockMsForOutcomePenalty(1));
