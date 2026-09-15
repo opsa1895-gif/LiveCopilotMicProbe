@@ -16,6 +16,9 @@ final class RealtimeRoutingPolicy {
     static final long ROUTE_LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     static final long ROUTE_LATENCY_FILE_MARGIN_MS = 700L;
     static final long MAX_ROUTE_LATENCY_JITTER_MS = 5_000L;
+    static final long MAX_ROUTE_LATENCY_SAMPLE_MS = 12_000L;
+    static final long MAX_ROUTE_LATENCY_RISE_STEP_MS = 3_000L;
+    static final long MAX_ROUTE_LATENCY_DROP_STEP_MS = 4_000L;
     static final long ROUTE_PROBE_MIN_MS = 6_000L;
     static final long ROUTE_PROBE_DEFAULT_MS = 12_000L;
     static final long ROUTE_PROBE_MAX_MS = 20_000L;
@@ -73,11 +76,33 @@ final class RealtimeRoutingPolicy {
         return latencyMs > SLOW_REALTIME_LATENCY_MS;
     }
 
+    static long boundedRouteLatencySample(long currentEstimateMs, int currentSamples,
+                                          long sampleMs) {
+        if (sampleMs < 0L) return sampleMs;
+        long bounded = Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, sampleMs);
+        if (currentEstimateMs < 0L || currentSamples <= 0) return bounded;
+
+        long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, currentEstimateMs));
+        long floor = Math.max(0L, safeEstimate - MAX_ROUTE_LATENCY_DROP_STEP_MS);
+        long ceiling = Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS,
+                safeEstimate + MAX_ROUTE_LATENCY_RISE_STEP_MS);
+        return Math.max(floor, Math.min(ceiling, bounded));
+    }
+
+    static boolean isRouteLatencyOutlier(long currentEstimateMs, int currentSamples,
+                                         long sampleMs) {
+        return sampleMs >= 0L
+                && boundedRouteLatencySample(currentEstimateMs, currentSamples, sampleMs) != sampleMs;
+    }
+
     static long nextRouteLatencyEstimate(long currentEstimateMs, int currentSamples,
                                          long sampleMs) {
         if (sampleMs < 0L) return currentEstimateMs;
-        if (currentEstimateMs < 0L || currentSamples <= 0) return sampleMs;
-        return Math.max(0L, (currentEstimateMs * 3L + sampleMs + 2L) / 4L);
+        long boundedSampleMs = boundedRouteLatencySample(
+                currentEstimateMs, currentSamples, sampleMs);
+        if (currentEstimateMs < 0L || currentSamples <= 0) return boundedSampleMs;
+        long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, currentEstimateMs));
+        return Math.max(0L, (safeEstimate * 3L + boundedSampleMs + 2L) / 4L);
     }
 
     static int nextRouteLatencySampleCount(int currentSamples, long sampleMs) {
@@ -95,7 +120,10 @@ final class RealtimeRoutingPolicy {
                                        int currentSamples, long sampleMs) {
         if (sampleMs < 0L) return currentJitterMs;
         if (currentEstimateMs < 0L || currentSamples <= 0) return 0L;
-        long deviation = Math.abs(sampleMs - currentEstimateMs);
+        long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, currentEstimateMs));
+        long boundedSampleMs = boundedRouteLatencySample(
+                safeEstimate, currentSamples, sampleMs);
+        long deviation = Math.abs(boundedSampleMs - safeEstimate);
         if (currentSamples <= 1 || currentJitterMs < 0L) {
             return Math.min(MAX_ROUTE_LATENCY_JITTER_MS, deviation);
         }

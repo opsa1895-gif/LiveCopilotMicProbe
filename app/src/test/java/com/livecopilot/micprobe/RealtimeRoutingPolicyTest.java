@@ -210,8 +210,61 @@ public class RealtimeRoutingPolicyTest {
 
         jitter = RealtimeRoutingPolicy.nextRouteLatencyJitter(jitter, estimate, samples, 2_600L);
         assertEquals(700L, jitter);
-        assertEquals(5_000L, RealtimeRoutingPolicy.nextRouteLatencyJitter(
+        assertEquals(4_500L, RealtimeRoutingPolicy.nextRouteLatencyJitter(
                 5_000L, 1_000L, 3, 20_000L));
+    }
+
+    @Test
+    public void singleExtremeSpikeIsWinsorizedInsteadOfPoisoningHistory() {
+        long estimate = 1_600L;
+        long jitter = 200L;
+        int samples = 3;
+
+        assertEquals(4_600L, RealtimeRoutingPolicy.boundedRouteLatencySample(
+                estimate, samples, 20_000L));
+        assertTrue(RealtimeRoutingPolicy.isRouteLatencyOutlier(
+                estimate, samples, 20_000L));
+
+        long nextJitter = RealtimeRoutingPolicy.nextRouteLatencyJitter(
+                jitter, estimate, samples, 20_000L);
+        long nextEstimate = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
+                estimate, samples, 20_000L);
+        assertEquals(2_350L, nextEstimate);
+        assertEquals(900L, nextJitter);
+        assertEquals(3_250L, RealtimeRoutingPolicy.riskAdjustedRouteLatency(
+                nextEstimate, nextJitter));
+    }
+
+    @Test
+    public void sustainedSlowdownStillMovesEstimatorUpward() {
+        long estimate = 1_600L;
+        long jitter = 200L;
+        int samples = 3;
+
+        for (int i = 0; i < 5; i++) {
+            long nextJitter = RealtimeRoutingPolicy.nextRouteLatencyJitter(
+                    jitter, estimate, samples, 8_000L);
+            long nextEstimate = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
+                    estimate, samples, 8_000L);
+            samples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(samples, 8_000L);
+            estimate = nextEstimate;
+            jitter = nextJitter;
+        }
+
+        assertTrue(estimate >= 5_000L);
+        assertTrue(jitter > 0L);
+    }
+
+    @Test
+    public void recoveryCanMoveFasterThanUpwardOutlierDrift() {
+        assertEquals(4_000L, RealtimeRoutingPolicy.boundedRouteLatencySample(
+                8_000L, 5, 1_000L));
+        assertEquals(5_000L, RealtimeRoutingPolicy.boundedRouteLatencySample(
+                2_000L, 5, 9_000L));
+        assertEquals(12_000L, RealtimeRoutingPolicy.boundedRouteLatencySample(
+                -1L, 0, Long.MAX_VALUE));
+        assertFalse(RealtimeRoutingPolicy.isRouteLatencyOutlier(
+                2_000L, 5, 3_000L));
     }
 
     @Test
