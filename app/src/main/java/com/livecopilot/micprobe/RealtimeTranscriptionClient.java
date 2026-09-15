@@ -72,7 +72,10 @@ final class RealtimeTranscriptionClient {
     private long stateSerial;
     private long readyAtMs;
     private int unstableReadyFailureStreak;
-    private int routingOutcomePenalty;
+    private int routingQualityPenalty;
+    private int routingLatencyPenalty;
+    private int goodRealtimeStreak;
+    private long lastRoutingSignalAtMs;
     private long transportBlockedUntilMs;
     private long outcomeBlockedUntilMs;
     private long latestRecoveryId;
@@ -115,7 +118,10 @@ final class RealtimeTranscriptionClient {
         partial.setLength(0);
         readyAtMs = 0L;
         unstableReadyFailureStreak = 0;
-        routingOutcomePenalty = 0;
+        routingQualityPenalty = 0;
+        routingLatencyPenalty = 0;
+        goodRealtimeStreak = 0;
+        lastRoutingSignalAtMs = 0L;
         transportBlockedUntilMs = 0L;
         outcomeBlockedUntilMs = 0L;
         clearBackupsLocked();
@@ -135,6 +141,7 @@ final class RealtimeTranscriptionClient {
 
     synchronized boolean beginTurn(int sourceSampleRate) {
         long now = System.currentTimeMillis();
+        decayRoutingPenaltiesLocked(now);
         long blockedUntilMs = RealtimeRoutingPolicy.effectiveBlockedUntil(
                 transportBlockedUntilMs, outcomeBlockedUntilMs);
         if (!RealtimeRoutingPolicy.shouldUseRealtime(ready, socket != null, now, blockedUntilMs)
@@ -274,22 +281,61 @@ final class RealtimeTranscriptionClient {
     }
 
     synchronized int routingOutcomePenalty() {
-        return Math.max(0, routingOutcomePenalty);
+        decayRoutingPenaltiesLocked(System.currentTimeMillis());
+        return RealtimeRoutingPolicy.effectiveOutcomePenalty(
+                routingQualityPenalty, routingLatencyPenalty);
     }
 
-    synchronized void noteRealtimeTranscriptOutcome(boolean acceptedUseful, boolean fileRecovery) {
+    synchronized int routingQualityPenalty() {
+        decayRoutingPenaltiesLocked(System.currentTimeMillis());
+        return Math.max(0, routingQualityPenalty);
+    }
+
+    synchronized int routingLatencyPenalty() {
+        decayRoutingPenaltiesLocked(System.currentTimeMillis());
+        return Math.max(0, routingLatencyPenalty);
+    }
+
+    synchronized int goodRealtimeStreak() {
+        return Math.max(0, goodRealtimeStreak);
+    }
+
+    synchronized void noteRealtimeTranscriptOutcome(boolean acceptedUseful, boolean fileRecovery,
+                                                     long latencyMs) {
         if (closed || !wanted) return;
-        routingOutcomePenalty = RealtimeRoutingPolicy.nextOutcomePenalty(
-                routingOutcomePenalty, acceptedUseful, fileRecovery);
         long now = System.currentTimeMillis();
-        if (acceptedUseful && !fileRecovery) {
-            if (routingOutcomePenalty <= 0 || outcomeBlockedUntilMs <= now) {
+        decayRoutingPenaltiesLocked(now);
+
+        int previousLatencyPenalty = routingLatencyPenalty;
+        routingQualityPenalty = RealtimeRoutingPolicy.nextOutcomePenalty(
+                routingQualityPenalty, acceptedUseful, fileRecovery);
+        if (!fileRecovery) {
+            routingLatencyPenalty = RealtimeRoutingPolicy.nextLatencyPenalty(
+                    routingLatencyPenalty, latencyMs);
+        }
+        goodRealtimeStreak = RealtimeRoutingPolicy.nextGoodRealtimeStreak(
+                goodRealtimeStreak, acceptedUseful, fileRecovery, latencyMs);
+        lastRoutingSignalAtMs = now;
+
+        if (RealtimeRoutingPolicy.shouldResetAfterGoodRealtime(goodRealtimeStreak)) {
+            routingQualityPenalty = 0;
+            routingLatencyPenalty = 0;
+            goodRealtimeStreak = 0;
+            outcomeBlockedUntilMs = 0L;
+            return;
+        }
+
+        int effectivePenalty = RealtimeRoutingPolicy.effectiveOutcomePenalty(
+                routingQualityPenalty, routingLatencyPenalty);
+        boolean latencyWorsened = routingLatencyPenalty > previousLatencyPenalty;
+        if (acceptedUseful && !fileRecovery && !latencyWorsened) {
+            if (effectivePenalty <= 0 || outcomeBlockedUntilMs <= now) {
                 outcomeBlockedUntilMs = 0L;
             }
             return;
         }
 
-        long blockMs = RealtimeRoutingPolicy.blockMsForOutcomePenalty(routingOutcomePenalty);
+        long blockMs = RealtimeRoutingPolicy.blockMsForOutcomePenalty(effectivePenalty);
         if (blockMs <= 0L) return;
         outcomeBlockedUntilMs = Math.max(outcomeBlockedUntilMs, now + blockMs);
     }
@@ -297,10 +343,32 @@ final class RealtimeTranscriptionClient {
     synchronized void notePrimaryFileTurnOutcome(boolean usable) {
         if (closed || !wanted || usable) return;
         long now = System.currentTimeMillis();
-        routingOutcomePenalty = RealtimeRoutingPolicy.penaltyAfterBadFile(
-                routingOutcomePenalty);
+        decayRoutingPenaltiesLocked(now);
+        routingQualityPenalty = RealtimeRoutingPolicy.penaltyAfterBadFile(
+                routingQualityPenalty);
+        routingLatencyPenalty = RealtimeRoutingPolicy.penaltyAfterBadFile(
+                routingLatencyPenalty);
+        goodRealtimeStreak = 0;
+        lastRoutingSignalAtMs = now;
         outcomeBlockedUntilMs = RealtimeRoutingPolicy.shortenOutcomeBlockAfterBadFile(
                 now, outcomeBlockedUntilMs);
+    }
+
+    private void decayRoutingPenaltiesLocked(long now) {
+        if (lastRoutingSignalAtMs <= 0L || now <= lastRoutingSignalAtMs) return;
+        long idleMs = now - lastRoutingSignalAtMs;
+        if (idleMs < RealtimeRoutingPolicy.PENALTY_DECAY_STEP_MS) return;
+
+        routingQualityPenalty = RealtimeRoutingPolicy.decayedPenalty(
+                routingQualityPenalty, idleMs, RealtimeRoutingPolicy.MAX_OUTCOME_PENALTY);
+        routingLatencyPenalty = RealtimeRoutingPolicy.decayedPenalty(
+                routingLatencyPenalty, idleMs, RealtimeRoutingPolicy.MAX_LATENCY_PENALTY);
+        long steps = idleMs / RealtimeRoutingPolicy.PENALTY_DECAY_STEP_MS;
+        lastRoutingSignalAtMs += steps * RealtimeRoutingPolicy.PENALTY_DECAY_STEP_MS;
+        if (routingQualityPenalty <= 0 && routingLatencyPenalty <= 0
+                && outcomeBlockedUntilMs <= now) {
+            outcomeBlockedUntilMs = 0L;
+        }
     }
 
     synchronized void shutdown() {

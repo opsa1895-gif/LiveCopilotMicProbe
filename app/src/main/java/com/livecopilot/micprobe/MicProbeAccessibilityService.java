@@ -369,18 +369,20 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         boolean fromRealtime = source.realtimeTransport;
         String clean = transcript == null ? "" : transcript.replace('\n', ' ').trim();
         long now = System.currentTimeMillis();
-        if (TranscriptQualityPolicy.isLowQuality(clean)) {
-            noteRoutingTranscriptOutcome(source, false);
-            aiStatus = "Слушам";
-            renderStatus();
-            renderDebug();
-            return;
-        }
+        long sttLatencySampleMs = -1L;
         if (!clean.isEmpty()
                 && lastVoiceEndAtMs > 0L
                 && now >= lastVoiceEndAtMs
                 && now - lastVoiceEndAtMs <= LATENCY_SAMPLE_MAX_AGE_MS) {
-            lastSttLatencyMs = now - lastVoiceEndAtMs;
+            sttLatencySampleMs = now - lastVoiceEndAtMs;
+            lastSttLatencyMs = sttLatencySampleMs;
+        }
+        if (TranscriptQualityPolicy.isLowQuality(clean)) {
+            noteRoutingTranscriptOutcome(source, false, sttLatencySampleMs);
+            aiStatus = "Слушам";
+            renderStatus();
+            renderDebug();
+            return;
         }
 
         String useful = removeLikelySelfEcho(clean, now);
@@ -430,7 +432,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             realtimeTranscriber.rememberAcceptedTranscript(useful);
         }
         if (!useful.isEmpty()) {
-            noteRoutingTranscriptOutcome(source, true);
+            noteRoutingTranscriptOutcome(source, true, sttLatencySampleMs);
             recordAcceptedSttSource(source);
             semanticEpoch++;
             if (semanticFallback != null && activeSemanticRequestId >= 0L) {
@@ -458,12 +460,13 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         }
     }
 
-    private void noteRoutingTranscriptOutcome(AcceptedSttSource source, boolean acceptedUseful) {
+    private void noteRoutingTranscriptOutcome(AcceptedSttSource source, boolean acceptedUseful,
+                                                long latencyMs) {
         if (realtimeTranscriber == null || source == null) return;
         if (source == AcceptedSttSource.REALTIME) {
-            realtimeTranscriber.noteRealtimeTranscriptOutcome(acceptedUseful, false);
+            realtimeTranscriber.noteRealtimeTranscriptOutcome(acceptedUseful, false, latencyMs);
         } else if (source == AcceptedSttSource.REALTIME_FILE_RECOVERY) {
-            realtimeTranscriber.noteRealtimeTranscriptOutcome(acceptedUseful, true);
+            realtimeTranscriber.noteRealtimeTranscriptOutcome(acceptedUseful, true, latencyMs);
         }
     }
 
@@ -1061,12 +1064,18 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 ? 0L : realtimeTranscriber.outcomeBlockRemainingMs();
         int unstableRt = realtimeTranscriber == null
                 ? 0 : realtimeTranscriber.unstableReadyFailureStreak();
-        int routeOutcomePenalty = realtimeTranscriber == null
-                ? 0 : realtimeTranscriber.routingOutcomePenalty();
+        int routeQualityPenalty = realtimeTranscriber == null
+                ? 0 : realtimeTranscriber.routingQualityPenalty();
+        int routeLatencyPenalty = realtimeTranscriber == null
+                ? 0 : realtimeTranscriber.routingLatencyPenalty();
+        int goodRealtimeStreak = realtimeTranscriber == null
+                ? 0 : realtimeTranscriber.goodRealtimeStreak();
         String rt = " • RT " + realtimeState
                 + (realtimeStateSerial > 0L ? "@" + realtimeStateSerial : "")
                 + (unstableRt > 0 ? " • unstable×" + unstableRt : "")
-                + (routeOutcomePenalty > 0 ? " • outcome×" + routeOutcomePenalty : "")
+                + (routeQualityPenalty > 0 ? " • q×" + routeQualityPenalty : "")
+                + (routeLatencyPenalty > 0 ? " • lat×" + routeLatencyPenalty : "")
+                + (goodRealtimeStreak > 0 ? " • good×" + goodRealtimeStreak : "")
                 + (routeBlockMs > 0L ? " • route-cd " + latencyLabel(routeBlockMs) : "")
                 + (transportBlockMs > 0L ? " • net-cd " + latencyLabel(transportBlockMs) : "")
                 + (outcomeBlockMs > 0L ? " • quality-cd " + latencyLabel(outcomeBlockMs) : "");
