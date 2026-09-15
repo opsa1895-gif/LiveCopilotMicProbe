@@ -229,6 +229,15 @@ final class RealtimeRoutingPolicy {
         return estimateMs + Math.max(0L, safeJitter);
     }
 
+    static long routeLatencyRiskGapMs(
+            long realtimeEstimateMs, long realtimeJitterMs,
+            long fileEstimateMs, long fileJitterMs) {
+        long realtimeRiskMs = riskAdjustedRouteLatency(realtimeEstimateMs, realtimeJitterMs);
+        long fileRiskMs = riskAdjustedRouteLatency(fileEstimateMs, fileJitterMs);
+        if (realtimeRiskMs < 0L || fileRiskMs < 0L) return Long.MIN_VALUE;
+        return realtimeRiskMs - fileRiskMs;
+    }
+
     static long routeLatencyPreferenceMarginMs(
             long realtimeJitterMs, int realtimeSamples,
             long fileJitterMs, int fileSamples) {
@@ -307,6 +316,21 @@ final class RealtimeRoutingPolicy {
         }
         return Math.max(ROUTE_LATENCY_SWITCH_MIN_EXTRA_MARGIN_MS,
                 Math.min(ROUTE_LATENCY_SWITCH_MAX_EXTRA_MARGIN_MS, extraMarginMs));
+    }
+
+    static long routeLatencySwitchGuardRemainingMs(
+            long realtimeJitterMs, int realtimeSamples, long realtimeSampleAtMs,
+            long fileJitterMs, int fileSamples, long fileSampleAtMs, long nowMs) {
+        if (realtimeJitterMs < 0L || fileJitterMs < 0L
+                || realtimeSamples < MIN_ROUTE_LATENCY_SAMPLES
+                || fileSamples < MIN_ROUTE_LATENCY_SAMPLES) return 0L;
+        if (!isRouteLatencyFresh(fileSampleAtMs, nowMs)
+                || fileSampleAtMs <= realtimeSampleAtMs
+                || realtimeSampleAtMs <= 0L || nowMs < realtimeSampleAtMs) return 0L;
+        long guardMs = adaptiveRouteLatencySwitchGuardMs(
+                realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
+        long elapsedMs = nowMs - realtimeSampleAtMs;
+        return elapsedMs >= guardMs ? 0L : guardMs - elapsedMs;
     }
 
     static long routeLatencySwitchMarginMs(
@@ -390,6 +414,44 @@ final class RealtimeRoutingPolicy {
         if (intervalMs <= 0L) return 0L;
         long elapsedMs = nowMs - realtimeSampleAtMs;
         return elapsedMs >= intervalMs ? 0L : intervalMs - elapsedMs;
+    }
+
+    static String routeLatencyDecisionReason(
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs) {
+        long riskGapMs = routeLatencyRiskGapMs(
+                realtimeEstimateMs, realtimeJitterMs, fileEstimateMs, fileJitterMs);
+        long baseMarginMs = routeLatencyPreferenceMarginMs(
+                realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
+        if (riskGapMs == Long.MIN_VALUE || baseMarginMs == Long.MAX_VALUE) return "learning";
+        if (!isRouteLatencyFresh(fileSampleAtMs, nowMs)) return "file-stale";
+        if (realtimeSampleAtMs <= 0L || nowMs < realtimeSampleAtMs) return "rt-clock";
+
+        long probeRemainingMs = realtimeProbeRemainingMs(
+                realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs);
+        if (probeRemainingMs > 0L) return "file-faster";
+
+        long requiredMarginMs = routeLatencySwitchMarginMs(
+                realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileJitterMs, fileSamples, fileSampleAtMs, nowMs);
+        long guardRemainingMs = routeLatencySwitchGuardRemainingMs(
+                realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileJitterMs, fileSamples, fileSampleAtMs, nowMs);
+        if (guardRemainingMs > 0L
+                && riskGapMs >= baseMarginMs
+                && riskGapMs < requiredMarginMs) return "switch-guard";
+
+        long intervalMs = adaptiveRealtimeProbeIntervalMs(
+                realtimeEstimateMs, realtimeJitterMs, fileEstimateMs, fileJitterMs);
+        long elapsedMs = nowMs - realtimeSampleAtMs;
+        if (requiredMarginMs != Long.MAX_VALUE
+                && riskGapMs >= requiredMarginMs
+                && intervalMs > 0L
+                && elapsedMs >= intervalMs) return "rt-probe";
+        if (riskGapMs < baseMarginMs) return "rt-margin";
+        return "rt-ready";
     }
 
     static boolean shouldPreferFileForLatency(
