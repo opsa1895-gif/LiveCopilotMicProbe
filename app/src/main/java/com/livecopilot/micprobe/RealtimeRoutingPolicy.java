@@ -19,7 +19,17 @@ final class RealtimeRoutingPolicy {
     static final long ROUTE_LATENCY_MIN_SAMPLE_EXTRA_MARGIN_MS = 100L;
     static final long ROUTE_LATENCY_SWITCH_GUARD_MS = 2_000L;
     static final long ROUTE_LATENCY_SWITCH_EXTRA_MARGIN_MS = 300L;
+    static final long ROUTE_LATENCY_SWITCH_MIN_GUARD_MS = 1_500L;
+    static final long ROUTE_LATENCY_SWITCH_MAX_GUARD_MS = 4_000L;
+    static final long ROUTE_LATENCY_SWITCH_MODERATE_JITTER_EXTRA_MS = 500L;
+    static final long ROUTE_LATENCY_SWITCH_HIGH_JITTER_EXTRA_MS = 1_500L;
+    static final long ROUTE_LATENCY_SWITCH_MIN_SAMPLE_EXTRA_MS = 500L;
+    static final long ROUTE_LATENCY_SWITCH_STABLE_REDUCTION_MS = 500L;
+    static final long ROUTE_LATENCY_SWITCH_MIN_EXTRA_MARGIN_MS = 200L;
+    static final long ROUTE_LATENCY_SWITCH_MAX_EXTRA_MARGIN_MS = 500L;
+    static final long ROUTE_LATENCY_SWITCH_LOW_CONFIDENCE_EXTRA_MARGIN_MS = 200L;
     static final int ROUTE_LATENCY_FULL_CONFIDENCE_SAMPLES = 4;
+    static final int ROUTE_LATENCY_MATURE_SWITCH_SAMPLES = 6;
     static final long MAX_ROUTE_LATENCY_JITTER_MS = 5_000L;
     static final long MAX_ROUTE_LATENCY_SAMPLE_MS = 12_000L;
     static final long MAX_ROUTE_LATENCY_RISE_STEP_MS = 3_000L;
@@ -33,6 +43,7 @@ final class RealtimeRoutingPolicy {
     static final long ROUTE_PROBE_STRONG_MARGIN_MS = 2_500L;
     static final long ROUTE_PROBE_HIGH_JITTER_MS = 1_500L;
     static final long ROUTE_PROBE_STABLE_JITTER_MS = 600L;
+    static final long ROUTE_SWITCH_VERY_STABLE_JITTER_MS = 300L;
     static final int MAX_OUTCOME_PENALTY = 4;
     static final int MAX_LATENCY_PENALTY = 4;
     static final int GOOD_REALTIME_RESET_STREAK = 2;
@@ -245,18 +256,74 @@ final class RealtimeRoutingPolicy {
         return ROUTE_LATENCY_FILE_MARGIN_MS + jitterExtraMarginMs + sampleExtraMarginMs;
     }
 
+    static long adaptiveRouteLatencySwitchGuardMs(
+            long realtimeJitterMs, int realtimeSamples,
+            long fileJitterMs, int fileSamples) {
+        long safeRealtimeJitterMs = Math.max(0L,
+                Math.min(MAX_ROUTE_LATENCY_JITTER_MS, realtimeJitterMs));
+        long safeFileJitterMs = Math.max(0L,
+                Math.min(MAX_ROUTE_LATENCY_JITTER_MS, fileJitterMs));
+        long combinedJitterMs = safeRealtimeJitterMs + safeFileJitterMs;
+        int minimumSamples = Math.min(
+                Math.min(MAX_ROUTE_LATENCY_SAMPLES, Math.max(0, realtimeSamples)),
+                Math.min(MAX_ROUTE_LATENCY_SAMPLES, Math.max(0, fileSamples)));
+
+        long guardMs = ROUTE_LATENCY_SWITCH_GUARD_MS;
+        if (combinedJitterMs >= ROUTE_PROBE_HIGH_JITTER_MS) {
+            guardMs += ROUTE_LATENCY_SWITCH_HIGH_JITTER_EXTRA_MS;
+        } else if (combinedJitterMs > ROUTE_PROBE_STABLE_JITTER_MS) {
+            guardMs += ROUTE_LATENCY_SWITCH_MODERATE_JITTER_EXTRA_MS;
+        }
+        if (minimumSamples <= MIN_ROUTE_LATENCY_SAMPLES) {
+            guardMs += ROUTE_LATENCY_SWITCH_MIN_SAMPLE_EXTRA_MS;
+        }
+        if (minimumSamples >= ROUTE_LATENCY_MATURE_SWITCH_SAMPLES
+                && combinedJitterMs <= ROUTE_SWITCH_VERY_STABLE_JITTER_MS) {
+            guardMs -= ROUTE_LATENCY_SWITCH_STABLE_REDUCTION_MS;
+        }
+        return Math.max(ROUTE_LATENCY_SWITCH_MIN_GUARD_MS,
+                Math.min(ROUTE_LATENCY_SWITCH_MAX_GUARD_MS, guardMs));
+    }
+
+    static long adaptiveRouteLatencySwitchExtraMarginMs(
+            long realtimeJitterMs, int realtimeSamples,
+            long fileJitterMs, int fileSamples) {
+        long safeRealtimeJitterMs = Math.max(0L,
+                Math.min(MAX_ROUTE_LATENCY_JITTER_MS, realtimeJitterMs));
+        long safeFileJitterMs = Math.max(0L,
+                Math.min(MAX_ROUTE_LATENCY_JITTER_MS, fileJitterMs));
+        long combinedJitterMs = safeRealtimeJitterMs + safeFileJitterMs;
+        int minimumSamples = Math.min(
+                Math.min(MAX_ROUTE_LATENCY_SAMPLES, Math.max(0, realtimeSamples)),
+                Math.min(MAX_ROUTE_LATENCY_SAMPLES, Math.max(0, fileSamples)));
+
+        long extraMarginMs = ROUTE_LATENCY_SWITCH_EXTRA_MARGIN_MS;
+        if (minimumSamples <= MIN_ROUTE_LATENCY_SAMPLES
+                && combinedJitterMs > ROUTE_PROBE_STABLE_JITTER_MS) {
+            extraMarginMs += ROUTE_LATENCY_SWITCH_LOW_CONFIDENCE_EXTRA_MARGIN_MS;
+        } else if (minimumSamples >= ROUTE_LATENCY_MATURE_SWITCH_SAMPLES
+                && combinedJitterMs <= ROUTE_SWITCH_VERY_STABLE_JITTER_MS) {
+            extraMarginMs -= 100L;
+        }
+        return Math.max(ROUTE_LATENCY_SWITCH_MIN_EXTRA_MARGIN_MS,
+                Math.min(ROUTE_LATENCY_SWITCH_MAX_EXTRA_MARGIN_MS, extraMarginMs));
+    }
+
     static long routeLatencySwitchMarginMs(
             long realtimeJitterMs, int realtimeSamples, long realtimeSampleAtMs,
             long fileJitterMs, int fileSamples, long fileSampleAtMs, long nowMs) {
         long baseMarginMs = routeLatencyPreferenceMarginMs(
                 realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
         if (baseMarginMs == Long.MAX_VALUE) return Long.MAX_VALUE;
+        long switchGuardMs = adaptiveRouteLatencySwitchGuardMs(
+                realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
         boolean newerFileEvidence = fileSampleAtMs > realtimeSampleAtMs;
         boolean recentRealtimeEvidence = realtimeSampleAtMs > 0L
                 && nowMs >= realtimeSampleAtMs
-                && nowMs - realtimeSampleAtMs < ROUTE_LATENCY_SWITCH_GUARD_MS;
+                && nowMs - realtimeSampleAtMs < switchGuardMs;
         if (!newerFileEvidence || !recentRealtimeEvidence) return baseMarginMs;
-        return baseMarginMs + ROUTE_LATENCY_SWITCH_EXTRA_MARGIN_MS;
+        return baseMarginMs + adaptiveRouteLatencySwitchExtraMarginMs(
+                realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
     }
 
     static boolean hasConfidentFileLatencyAdvantage(
