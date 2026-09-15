@@ -105,7 +105,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private int lastFileQualityDrops;
     private int lastFileOtherDrops;
     private int lastFileDegradedStreak;
-    private long lastFileRetryCooldownMs;
+    private long lastFileRetryCooldownUntilMs;
     private String lastSemanticTerminal = "";
     private int lastSemanticDecisionAttempts;
 
@@ -502,10 +502,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFileQualityDrops = Math.max(0, qualityDrops);
         lastFileOtherDrops = Math.max(0, otherDrops);
         lastFileDegradedStreak = Math.max(0, degradedTurnStreak);
-        lastFileRetryCooldownMs = Math.max(0L, retryCooldownRemainingMs);
+        long safeCooldownMs = Math.max(0L, retryCooldownRemainingMs);
+        lastFileRetryCooldownUntilMs = safeCooldownMs > 0L
+                ? System.currentTimeMillis() + safeCooldownMs : 0L;
         if (submittedChunks > 0 && failedChunks >= submittedChunks
                 && lastFileTimeoutDrops + lastFileNetworkDrops > 0
-                && lastFileRetryCooldownMs > 0L) {
+                && fileRetryCooldownRemainingMs() > 0L) {
             aiStatus = "Слушам • нестабилна връзка";
             renderStatus();
         }
@@ -541,6 +543,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         String raw = status == null ? "" : status.trim();
         String lower = raw.toLowerCase(Locale.ROOT);
+        if (!replyWork && lower.startsWith("слушам")
+                && lastFileDegradedStreak >= 2
+                && fileRetryCooldownRemainingMs() > 0L) {
+            raw = "Слушам • нестабилна връзка";
+            lower = raw.toLowerCase(Locale.ROOT);
+        }
         if (lower.contains("мисля") || lower.contains("генерирам")) {
             thinkingStartedAtMs = System.currentTimeMillis();
             lastFirstReplyLatencyMs = -1L;
@@ -992,8 +1000,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 + lastFileNetworkDrops + "/" + lastFileQualityDrops + "/" + lastFileOtherDrops
                 + " • budget " + latencyLabel(lastFileSttDeadlineMs)
                 + (lastFileDegradedStreak > 0 ? " • degraded×" + lastFileDegradedStreak : "")
-                + (lastFileRetryCooldownMs > 0L
-                ? " • retry-cd " + latencyLabel(lastFileRetryCooldownMs) : "");
+                + (fileRetryCooldownRemainingMs() > 0L
+                ? " • retry-cd " + latencyLabel(fileRetryCooldownRemainingMs()) : "");
         String semanticLifecycle = lastSemanticTerminal.isEmpty() ? ""
                 : "\nsem-end " + lastSemanticTerminal
                 + (lastSemanticDecisionAttempts > 0
@@ -1022,9 +1030,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFileQualityDrops = 0;
         lastFileOtherDrops = 0;
         lastFileDegradedStreak = 0;
-        lastFileRetryCooldownMs = 0L;
+        lastFileRetryCooldownUntilMs = 0L;
         lastSemanticTerminal = "";
         lastSemanticDecisionAttempts = 0;
+    }
+
+    private long fileRetryCooldownRemainingMs() {
+        if (lastFileRetryCooldownUntilMs <= 0L) return 0L;
+        return Math.max(0L, lastFileRetryCooldownUntilMs - System.currentTimeMillis());
     }
 
     private static String latencyLabel(long ms) {

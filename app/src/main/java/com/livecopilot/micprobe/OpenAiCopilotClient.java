@@ -836,6 +836,7 @@ final class OpenAiCopilotClient {
                 if (!shouldProcessAudioResult(item)) throw e;
             }
             if (attempt + 1 < maxAttempts) {
+                if (!FileSttRecoveryPolicy.shouldRetryFailure(last, attempt + 1, item.allowRetry)) break;
                 if (!shouldProcessAudioResult(item)) {
                     throw new java.io.InterruptedIOException("stale transcription");
                 }
