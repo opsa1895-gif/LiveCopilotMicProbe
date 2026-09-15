@@ -25,7 +25,7 @@ import okhttp3.WebSocketListener;
 
 final class RealtimeTranscriptionClient {
     interface Listener {
-        void onState(String state);
+        void onState(long stateSerial, String state);
         void onPartial(long speechEpoch, String partial);
         void onFinal(long turnSerial, long speechEpoch, String transcript);
     }
@@ -64,6 +64,7 @@ final class RealtimeTranscriptionClient {
     private long generation;
     private long speechEpoch;
     private long committedSpeechEpoch;
+    private long stateSerial;
     private long latestRecoveryId;
     private int activeBackupSampleRate = 16_000;
     private int pendingBackupSampleRate = 16_000;
@@ -108,7 +109,7 @@ final class RealtimeTranscriptionClient {
         if (old != null) {
             try { old.close(1000, "pause"); } catch (Throwable ignored) {}
         }
-        listener.onState("off");
+        emitState("off");
     }
 
     synchronized long noteNewSpeech() {
@@ -156,7 +157,7 @@ final class RealtimeTranscriptionClient {
             ready = false;
             sentSamples = 0;
             activeBackup.clear();
-            listener.onState("fallback");
+            emitState("fallback");
             try { failedSocket.close(1011, "append_failed"); } catch (Throwable ignored) {}
             scheduleReconnect();
             return false;
@@ -180,7 +181,7 @@ final class RealtimeTranscriptionClient {
                 socket = null;
                 ready = false;
                 awaitingCompletion = false;
-                listener.onState("fallback");
+                emitState("fallback");
                 try { failedSocket.close(1011, "clear_failed"); } catch (Throwable ignored) {}
                 scheduleReconnect();
             }
@@ -201,7 +202,7 @@ final class RealtimeTranscriptionClient {
             ready = false;
             awaitingCompletion = false;
             activeBackup.clear();
-            listener.onState("fallback");
+            emitState("fallback");
             try { failedSocket.close(1011, "commit_failed"); } catch (Throwable ignored) {}
             scheduleReconnect();
             return false;
@@ -244,11 +245,11 @@ final class RealtimeTranscriptionClient {
         if (!wanted || closed || socket != null) return;
         String key = SecretStore.loadApiKey(context);
         if (key.isEmpty()) {
-            listener.onState("no_key");
+            emitState("no_key");
             return;
         }
 
-        listener.onState("connecting");
+        emitState("connecting");
         Request request = new Request.Builder()
                 .url(WS_URL)
                 .header("Authorization", "Bearer " + key)
@@ -271,7 +272,7 @@ final class RealtimeTranscriptionClient {
             ready = false;
             turnActive = false;
             awaitingCompletion = false;
-            listener.onState("fallback");
+            emitState("fallback");
             try { ws.close(1011, "session_update_failed"); } catch (Throwable ignored) {}
             scheduleReconnect();
             return;
@@ -282,7 +283,7 @@ final class RealtimeTranscriptionClient {
         long stableGeneration = generation;
         scheduler.schedule(() -> markConnectionStable(ws, stableGeneration),
                 RealtimeReconnectPolicy.STABLE_RESET_MS, TimeUnit.MILLISECONDS);
-        listener.onState("ready");
+        emitState("ready");
     }
 
     private void handleMessage(WebSocket ws, String text) {
@@ -347,7 +348,7 @@ final class RealtimeTranscriptionClient {
                 turnActive = false;
                 awaitingCompletion = false;
             }
-            listener.onState("fallback");
+            emitState("fallback");
             if (failedSocket != null) {
                 try { failedSocket.close(1011, "server_error"); } catch (Throwable ignored) {}
             }
@@ -370,7 +371,7 @@ final class RealtimeTranscriptionClient {
             turnActive = false;
             awaitingCompletion = false;
         }
-        listener.onState("fallback");
+        emitState("fallback");
         if (recoveryTurn > 0L) recoverCommittedTurn(recoveryTurn, recoveryGeneration, "closed");
         scheduleReconnect();
     }
@@ -389,7 +390,7 @@ final class RealtimeTranscriptionClient {
             turnActive = false;
             awaitingCompletion = false;
         }
-        listener.onState("fallback");
+        emitState("fallback");
         if (recoveryTurn > 0L) recoverCommittedTurn(recoveryTurn, recoveryGeneration, "failure");
         scheduleReconnect();
     }
@@ -415,7 +416,7 @@ final class RealtimeTranscriptionClient {
         }
 
         listener.onPartial(timeoutSpeechEpoch, "");
-        listener.onState("fallback");
+        emitState("fallback");
         if (old != null) {
             try { old.close(1011, "transcription_timeout"); } catch (Throwable ignored) {}
         }
@@ -442,7 +443,7 @@ final class RealtimeTranscriptionClient {
             clearPendingBackupLocked(turn);
         }
 
-        listener.onState("file_fallback");
+        emitState("file_fallback");
         fallbackExecutor.execute(() -> {
             if (!shouldDeliverRecovery(recoveryId, recoveryGeneration, queuedAtMs)) return;
 
@@ -457,7 +458,7 @@ final class RealtimeTranscriptionClient {
             if (!transcript.isEmpty()) {
                 listener.onFinal(turn, recoverySpeechEpoch, transcript);
             } else {
-                listener.onState("fallback_failed");
+                emitStateUnlessReady("fallback_failed");
             }
         });
     }
@@ -556,9 +557,26 @@ final class RealtimeTranscriptionClient {
             turnActive = false;
             awaitingCompletion = false;
         }
-        listener.onState("fallback");
+        emitState("fallback");
         try { ws.close(1011, "context_update_failed"); } catch (Throwable ignored) {}
         scheduleReconnect();
+    }
+
+    private void emitState(String state) {
+        long serial;
+        synchronized (this) {
+            serial = ++stateSerial;
+        }
+        listener.onState(serial, state);
+    }
+
+    private void emitStateUnlessReady(String state) {
+        long serial;
+        synchronized (this) {
+            if (closed || (ready && socket != null)) return;
+            serial = ++stateSerial;
+        }
+        listener.onState(serial, state);
     }
 
     private synchronized void markConnectionStable(WebSocket ws, long stableGeneration) {
