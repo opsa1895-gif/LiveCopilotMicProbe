@@ -16,6 +16,13 @@ final class RealtimeRoutingPolicy {
     static final long ROUTE_LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     static final long ROUTE_LATENCY_FILE_MARGIN_MS = 700L;
     static final long MAX_ROUTE_LATENCY_JITTER_MS = 5_000L;
+    static final long ROUTE_PROBE_MIN_MS = 6_000L;
+    static final long ROUTE_PROBE_DEFAULT_MS = 12_000L;
+    static final long ROUTE_PROBE_MAX_MS = 20_000L;
+    static final long ROUTE_PROBE_EARLY_MARGIN_MS = 1_200L;
+    static final long ROUTE_PROBE_STRONG_MARGIN_MS = 2_500L;
+    static final long ROUTE_PROBE_HIGH_JITTER_MS = 1_500L;
+    static final long ROUTE_PROBE_STABLE_JITTER_MS = 600L;
     static final int MAX_OUTCOME_PENALTY = 4;
     static final int MAX_LATENCY_PENALTY = 4;
     static final int GOOD_REALTIME_RESET_STREAK = 2;
@@ -103,18 +110,50 @@ final class RealtimeRoutingPolicy {
         return estimateMs + Math.max(0L, safeJitter);
     }
 
-    static boolean shouldPreferFileForLatency(
+    static long adaptiveRealtimeProbeIntervalMs(
+            long realtimeEstimateMs, long realtimeJitterMs,
+            long fileEstimateMs, long fileJitterMs) {
+        long realtimeRiskMs = riskAdjustedRouteLatency(realtimeEstimateMs, realtimeJitterMs);
+        long fileRiskMs = riskAdjustedRouteLatency(fileEstimateMs, fileJitterMs);
+        if (realtimeRiskMs < 0L || fileRiskMs < 0L) return 0L;
+        long riskGapMs = realtimeRiskMs - fileRiskMs;
+        if (riskGapMs < ROUTE_LATENCY_FILE_MARGIN_MS) return 0L;
+
+        long combinedJitterMs = Math.max(0L, realtimeJitterMs)
+                + Math.max(0L, fileJitterMs);
+        if (combinedJitterMs >= ROUTE_PROBE_HIGH_JITTER_MS
+                || riskGapMs < ROUTE_PROBE_EARLY_MARGIN_MS) {
+            return ROUTE_PROBE_MIN_MS;
+        }
+        if (riskGapMs >= ROUTE_PROBE_STRONG_MARGIN_MS
+                && combinedJitterMs <= ROUTE_PROBE_STABLE_JITTER_MS) {
+            return ROUTE_PROBE_MAX_MS;
+        }
+        return ROUTE_PROBE_DEFAULT_MS;
+    }
+
+    static long realtimeProbeRemainingMs(
             long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
             long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
             int fileSamples, long fileSampleAtMs, long nowMs) {
         if (realtimeSamples < MIN_ROUTE_LATENCY_SAMPLES
-                || fileSamples < MIN_ROUTE_LATENCY_SAMPLES) return false;
-        if (!isRouteLatencyFresh(realtimeSampleAtMs, nowMs)
-                || !isRouteLatencyFresh(fileSampleAtMs, nowMs)) return false;
-        long realtimeRiskMs = riskAdjustedRouteLatency(realtimeEstimateMs, realtimeJitterMs);
-        long fileRiskMs = riskAdjustedRouteLatency(fileEstimateMs, fileJitterMs);
-        if (realtimeRiskMs < 0L || fileRiskMs < 0L) return false;
-        return realtimeRiskMs - fileRiskMs >= ROUTE_LATENCY_FILE_MARGIN_MS;
+                || fileSamples < MIN_ROUTE_LATENCY_SAMPLES) return 0L;
+        if (!isRouteLatencyFresh(fileSampleAtMs, nowMs)
+                || realtimeSampleAtMs <= 0L || nowMs < realtimeSampleAtMs) return 0L;
+        long intervalMs = adaptiveRealtimeProbeIntervalMs(
+                realtimeEstimateMs, realtimeJitterMs, fileEstimateMs, fileJitterMs);
+        if (intervalMs <= 0L) return 0L;
+        long elapsedMs = nowMs - realtimeSampleAtMs;
+        return elapsedMs >= intervalMs ? 0L : intervalMs - elapsedMs;
+    }
+
+    static boolean shouldPreferFileForLatency(
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs) {
+        return realtimeProbeRemainingMs(
+                realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs) > 0L;
     }
 
     private static boolean isRouteLatencyFresh(long sampleAtMs, long nowMs) {

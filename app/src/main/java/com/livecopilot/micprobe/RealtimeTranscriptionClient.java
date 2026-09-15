@@ -353,6 +353,15 @@ final class RealtimeTranscriptionClient {
                 ? fileRouteLatencyJitterMs : -1L;
     }
 
+    synchronized long performanceProbeRemainingMs() {
+        return RealtimeRoutingPolicy.realtimeProbeRemainingMs(
+                realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
+                realtimeRouteLatencySamples, realtimeRouteLatencySampleAtMs,
+                fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs,
+                System.currentTimeMillis());
+    }
+
     synchronized String lastRouteDecisionLabel() {
         return lastRouteDecisionLabel;
     }
