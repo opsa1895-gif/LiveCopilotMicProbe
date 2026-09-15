@@ -160,6 +160,14 @@ public class RealtimeRoutingPolicyTest {
     }
 
     @Test
+    public void filePerformanceEvidenceRequiresHealthyFileLane() {
+        assertTrue(RealtimeRoutingPolicy.isFilePerformanceEligible(true, 0, 0L));
+        assertFalse(RealtimeRoutingPolicy.isFilePerformanceEligible(true, 1, 0L));
+        assertFalse(RealtimeRoutingPolicy.isFilePerformanceEligible(true, 0, 1L));
+        assertFalse(RealtimeRoutingPolicy.isFilePerformanceEligible(false, 0, 0L));
+    }
+
+    @Test
     public void connectedSocketIsRoutableOnlyAfterBlockExpires() {
         assertTrue(RealtimeRoutingPolicy.shouldUseRealtime(true, true, 10_000L, 0L));
         assertFalse(RealtimeRoutingPolicy.shouldUseRealtime(true, true, 10_000L, 12_000L));

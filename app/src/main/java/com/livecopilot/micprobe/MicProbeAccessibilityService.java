@@ -570,9 +570,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFileDegradedStreak = Math.max(0, degradedTurnStreak);
         boolean usableFileRoute = RealtimeRoutingPolicy.isUsableFileOutcome(
                 hasText(turnFocus), submittedChunks, failedChunks, lastChunkFailed);
+        boolean filePerformanceEligible = RealtimeRoutingPolicy.isFilePerformanceEligible(
+                usableFileRoute, degradedTurnStreak, retryCooldownRemainingMs);
         if (realtimeTranscriber != null) {
             realtimeTranscriber.notePrimaryFileTurnOutcome(
-                    usableFileRoute, lastFileDrainLatencyMs);
+                    usableFileRoute, filePerformanceEligible, lastFileDrainLatencyMs);
         }
         long safeCooldownMs = Math.max(0L, retryCooldownRemainingMs);
         lastFileRetryCooldownUntilMs = safeCooldownMs > 0L

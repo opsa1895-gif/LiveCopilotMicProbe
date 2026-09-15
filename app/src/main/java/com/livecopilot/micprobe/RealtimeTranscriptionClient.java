@@ -389,25 +389,26 @@ final class RealtimeTranscriptionClient {
         outcomeBlockedUntilMs = Math.max(outcomeBlockedUntilMs, now + blockMs);
     }
 
-    synchronized void notePrimaryFileTurnOutcome(boolean usable, long drainLatencyMs) {
+    synchronized void notePrimaryFileTurnOutcome(boolean usable, boolean performanceEligible,
+                                                 long drainLatencyMs) {
         if (closed || !wanted) return;
         goodRealtimeStreak = 0;
         long now = System.currentTimeMillis();
-        if (usable) {
-            if (drainLatencyMs >= 0L) {
-                fileRouteLatencyEstimateMs = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
-                        fileRouteLatencyEstimateMs, fileRouteLatencySamples, drainLatencyMs);
-                fileRouteLatencySamples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(
-                        fileRouteLatencySamples, drainLatencyMs);
-                fileRouteLatencySampleAtMs = now;
-            }
-            return;
+        if (performanceEligible && drainLatencyMs >= 0L) {
+            fileRouteLatencyEstimateMs = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
+                    fileRouteLatencyEstimateMs, fileRouteLatencySamples, drainLatencyMs);
+            fileRouteLatencySamples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(
+                    fileRouteLatencySamples, drainLatencyMs);
+            fileRouteLatencySampleAtMs = now;
+        } else if (!performanceEligible) {
+            // A degraded/cooldown file lane cannot keep winning on stale speed history,
+            // even if its transcript coverage was still usable enough for context.
+            fileRouteLatencyEstimateMs = -1L;
+            fileRouteLatencySamples = 0;
+            fileRouteLatencySampleAtMs = 0L;
         }
-        // A degraded file turn invalidates any old "file is faster" evidence so an
-        // unhealthy file lane cannot keep winning on stale performance history.
-        fileRouteLatencyEstimateMs = -1L;
-        fileRouteLatencySamples = 0;
-        fileRouteLatencySampleAtMs = 0L;
+        if (usable) return;
+
         decayRoutingPenaltiesLocked(now);
         routingQualityPenalty = RealtimeRoutingPolicy.penaltyAfterBadFile(
                 routingQualityPenalty);

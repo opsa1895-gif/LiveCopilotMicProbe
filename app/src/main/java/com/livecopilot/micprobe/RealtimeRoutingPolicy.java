@@ -150,6 +150,11 @@ final class RealtimeRoutingPolicy {
                 >= FileTurnCoveragePolicy.MIN_CONSERVATIVE_COVERAGE_PERCENT;
     }
 
+    static boolean isFilePerformanceEligible(boolean usable, int degradedTurnStreak,
+                                             long retryCooldownRemainingMs) {
+        return usable && degradedTurnStreak <= 0 && retryCooldownRemainingMs <= 0L;
+    }
+
     static boolean shouldUseRealtime(boolean ready, boolean socketPresent,
                                      long nowMs, long blockedUntilMs) {
         return ready
