@@ -99,6 +99,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private int lastFileFailedChunks;
     private boolean lastFileTailMissing;
     private long lastFileSttDeadlineMs = -1L;
+    private String lastSemanticTerminal = "";
+    private int lastSemanticDecisionAttempts;
 
     @Override
     protected void onServiceConnected() {
@@ -106,8 +108,19 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         loadUiState();
         engine = new MicProbeEngine(this, this);
         aiClient = new OpenAiCopilotClient(this, this);
-        semanticFallback = new SemanticReplyFallback(this, (requestId, replies) ->
-                getMainExecutor().execute(() -> applySemanticReply(requestId, replies)));
+        semanticFallback = new SemanticReplyFallback(this, new SemanticReplyFallback.Listener() {
+            @Override
+            public void onDecision(long requestId, OpenAiCopilotClient.Replies replies) {
+                getMainExecutor().execute(() -> applySemanticReply(requestId, replies));
+            }
+
+            @Override
+            public void onFinished(long requestId, SemanticReplyFallback.TerminalState state,
+                                   int decisionAttempts) {
+                getMainExecutor().execute(() ->
+                        handleSemanticFinished(requestId, state, decisionAttempts));
+            }
+        });
         realtimeTranscriber = new RealtimeTranscriptionClient(this, new RealtimeTranscriptionClient.Listener() {
             @Override
             public void onState(String state) {
@@ -188,6 +201,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public synchronized void onStreamTurnStart(int sampleRate) {
+        if (engine == null || !engine.isRunning()) return;
         clearFallbackTurnAudio();
         realtimePartial = "";
         semanticEpoch++;
@@ -196,6 +210,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         // waiting for a final transcript so an old answer cannot pop over a new turn.
         fileSpeechEpoch = aiClient != null ? aiClient.noteNewSpeech() : -1L;
         if (semanticFallback != null) semanticFallback.invalidate();
+        if (activeSemanticRequestId >= 0L) {
+            lastSemanticTerminal = "cancelled";
+            lastSemanticDecisionAttempts = 0;
+        }
         activeSemanticRequestId = -1L;
         activeSemanticEpoch = -1L;
         semanticPrimaryAppliedAtMs = 0L;
@@ -214,6 +232,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onPcmStream(short[] samples, int sampleRate) {
+        if (engine == null || !engine.isRunning()) return;
         // Capture the exact stream once, without the engine's forced-split overlap.
         // If Realtime dies mid-turn we keep buffering the rest for one clean file STT.
         if (realtimeBackupStreaming) appendFallbackTurnAudio(samples, sampleRate);
@@ -226,6 +245,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onStreamTurnEnd() {
+        if (engine == null || !engine.isRunning()) return;
         boolean hadRealtimeBackup = realtimeBackupStreaming;
         boolean committed = hadRealtimeBackup
                 && realtimeTurnActive
@@ -400,6 +420,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (lastFileTranscriptAtMs < lastRealtimeTranscriptAtMs) return;
 
         if (semanticFallback != null) semanticFallback.invalidate();
+        if (activeSemanticRequestId >= 0L) {
+            lastSemanticTerminal = "cancelled";
+            lastSemanticDecisionAttempts = 0;
+        }
         activeSemanticRequestId = -1L;
         activeSemanticEpoch = -1L;
         semanticPrimaryAppliedAtMs = 0L;
@@ -538,7 +562,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 focusSnapshot, focusTimeSnapshot, semanticEpochSnapshot, conservativeSnapshot);
     }
 
-    private void requestSemanticFallback(String focus, long focusAtMs, long expectedSemanticEpoch,
+    private synchronized void requestSemanticFallback(String focus, long focusAtMs, long expectedSemanticEpoch,
                                          boolean conservativeInput) {
         if (engine == null || !engine.isRunning() || semanticFallback == null) return;
         if (!SemanticEpochPolicy.shouldRun(expectedSemanticEpoch, semanticEpoch)) return;
@@ -550,15 +574,31 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastSemanticRequestAtMs = now;
         semanticAnswerBaselineMs = answerUpdatedAtMs;
         semanticPrimaryAppliedAtMs = 0L;
+        thinkingStartedAtMs = now;
+        lastFirstReplyLatencyMs = -1L;
+        lastStylesLatencyMs = -1L;
+        lastSemanticTerminal = "running";
+        lastSemanticDecisionAttempts = 0;
+        aiStatus = conservativeInput ? "Проверявам…" : "Мисля…";
+        renderStatus();
+        renderDebug();
+
         long requestId = semanticFallback.request(
                 buildSemanticContext(), focus, currentVisibleSuggestion(), conservativeInput);
         activeSemanticRequestId = requestId;
         activeSemanticEpoch = requestId >= 0L ? expectedSemanticEpoch : -1L;
         pendingSemanticFocus = "";
         pendingSemanticConservative = false;
+        if (requestId < 0L) {
+            lastSemanticTerminal = "rejected";
+            thinkingStartedAtMs = 0L;
+            aiStatus = "Слушам";
+            renderStatus();
+            renderDebug();
+        }
     }
 
-    private void applySemanticReply(long requestId, OpenAiCopilotClient.Replies replies) {
+    private synchronized void applySemanticReply(long requestId, OpenAiCopilotClient.Replies replies) {
         if (requestId < 0L || requestId != activeSemanticRequestId) return;
         if (!SemanticEpochPolicy.shouldRun(activeSemanticEpoch, semanticEpoch)) return;
         if (engine == null || !engine.isRunning() || replies == null) return;
@@ -599,12 +639,39 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         if (primaryOnly) {
             semanticPrimaryAppliedAtMs = now;
-        } else {
-            activeSemanticRequestId = -1L;
-            activeSemanticEpoch = -1L;
-            semanticPrimaryAppliedAtMs = 0L;
+            String lower = aiStatus == null ? "" : aiStatus.toLowerCase(Locale.ROOT);
+            if (lower.contains("мисля") || lower.contains("проверявам")) {
+                aiStatus = "Слушам";
+                renderStatus();
+            }
         }
+        // Terminal cleanup is owned by handleSemanticFinished(). This avoids leaving
+        // direct-only or failed-style requests permanently active.
         renderDebug();
+    }
+
+    private synchronized void handleSemanticFinished(
+            long requestId, SemanticReplyFallback.TerminalState state, int decisionAttempts) {
+        if (requestId < 0L || requestId != activeSemanticRequestId) return;
+        if (!SemanticEpochPolicy.shouldRun(activeSemanticEpoch, semanticEpoch)) return;
+
+        lastSemanticTerminal = state == null
+                ? "finished"
+                : state.name().toLowerCase(Locale.ROOT).replace('_', '-');
+        lastSemanticDecisionAttempts = Math.max(0, decisionAttempts);
+        activeSemanticRequestId = -1L;
+        activeSemanticEpoch = -1L;
+        semanticPrimaryAppliedAtMs = 0L;
+        thinkingStartedAtMs = 0L;
+
+        if (engine != null && engine.isRunning()) {
+            String lower = aiStatus == null ? "" : aiStatus.toLowerCase(Locale.ROOT);
+            if (lower.contains("мисля") || lower.contains("проверявам")) {
+                aiStatus = "Слушам";
+                renderStatus();
+            }
+            renderDebug();
+        }
     }
 
     private String removeLikelySelfEcho(String transcript, long now) {
@@ -758,6 +825,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             if (realtimeTranscriber != null) realtimeTranscriber.stop();
             pausedAtMs = System.currentTimeMillis();
             if (semanticFallback != null) semanticFallback.invalidate();
+            if (activeSemanticRequestId >= 0L) {
+                lastSemanticTerminal = "cancelled";
+                lastSemanticDecisionAttempts = 0;
+            }
             activeSemanticRequestId = -1L;
             activeSemanticEpoch = -1L;
             semanticPrimaryAppliedAtMs = 0L;
@@ -888,9 +959,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 + lastFileSubmittedChunks + ")"
                 + (lastFileTailMissing ? " • tail-missing" : "")
                 + " • budget " + latencyLabel(lastFileSttDeadlineMs);
+        String semanticLifecycle = lastSemanticTerminal.isEmpty() ? ""
+                : "\nsem-end " + lastSemanticTerminal
+                + (lastSemanticDecisionAttempts > 0
+                ? " • attempts " + lastSemanticDecisionAttempts : "");
         String echo = lastSelfEchoAtMs > 0L
                 && System.currentTimeMillis() - lastSelfEchoAtMs < 5_000L ? " • echo" : "";
-        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency + fileConfidence);
+        debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency
+                + fileConfidence + semanticLifecycle);
     }
 
     private void resetLatencyMetrics() {
@@ -906,6 +982,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFileFailedChunks = 0;
         lastFileTailMissing = false;
         lastFileSttDeadlineMs = -1L;
+        lastSemanticTerminal = "";
+        lastSemanticDecisionAttempts = 0;
     }
 
     private static String latencyLabel(long ms) {
