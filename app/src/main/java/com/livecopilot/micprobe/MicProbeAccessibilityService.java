@@ -67,6 +67,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private volatile boolean realtimeBackupStreaming;
     private volatile long realtimeSpeechEpoch = -1L;
     private volatile long fileSpeechEpoch = -1L;
+    private long realtimeStateSerial;
     private short[] fallbackTurnAudio;
     private int fallbackTurnSampleRate = 16_000;
     private long lastRealtimeTurnSerial;
@@ -99,6 +100,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     private int lastFileFailedChunks;
     private boolean lastFileTailMissing;
     private long lastFileSttDeadlineMs = -1L;
+    private int lastFileTimeoutDrops;
+    private int lastFileNetworkDrops;
+    private int lastFileQualityDrops;
+    private int lastFileOtherDrops;
+    private int lastFileDegradedStreak;
+    private long lastFileRetryCooldownUntilMs;
     private String lastSemanticTerminal = "";
     private int lastSemanticDecisionAttempts;
 
@@ -123,12 +130,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         });
         realtimeTranscriber = new RealtimeTranscriptionClient(this, new RealtimeTranscriptionClient.Listener() {
             @Override
-            public void onState(String state) {
-                getMainExecutor().execute(() -> {
-                    realtimeState = state == null ? "?" : state;
-                    if (!"ready".equals(realtimeState)) realtimePartial = "";
-                    renderDebug();
-                });
+            public void onState(long stateSerial, String state) {
+                getMainExecutor().execute(() -> handleRealtimeState(stateSerial, state));
             }
 
             @Override
@@ -299,6 +302,14 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         acceptTranscript(transcript, false);
     }
 
+    private synchronized void handleRealtimeState(long stateSerial, String state) {
+        if (!RealtimeStateFreshnessPolicy.shouldAccept(stateSerial, realtimeStateSerial)) return;
+        realtimeStateSerial = stateSerial;
+        realtimeState = state == null ? "?" : state;
+        if (!"ready".equals(realtimeState)) realtimePartial = "";
+        renderDebug();
+    }
+
     private synchronized void handleRealtimePartial(long speechEpoch, String partial) {
         if (!RealtimeEventFreshnessPolicy.shouldAccept(speechEpoch, realtimeSpeechEpoch)) return;
         if (engine == null || !engine.isRunning()) return;
@@ -460,16 +471,22 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
     public void onFileTurnComplete(
             long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued,
             long drainLatencyMs, int submittedChunks, int failedChunks,
-            boolean lastChunkFailed, long nextDeadlineMs) {
+            boolean lastChunkFailed, long nextDeadlineMs, int timeoutDrops, int networkDrops,
+            int qualityDrops, int otherDrops, int degradedTurnStreak,
+            long retryCooldownRemainingMs) {
         getMainExecutor().execute(() -> handleFileTurnComplete(
                 sessionSerial, inputSerial, turnFocus, mainReplyQueued, drainLatencyMs,
-                submittedChunks, failedChunks, lastChunkFailed, nextDeadlineMs));
+                submittedChunks, failedChunks, lastChunkFailed, nextDeadlineMs,
+                timeoutDrops, networkDrops, qualityDrops, otherDrops,
+                degradedTurnStreak, retryCooldownRemainingMs));
     }
 
     private synchronized void handleFileTurnComplete(
             long sessionSerial, long inputSerial, String turnFocus, boolean mainReplyQueued,
             long drainLatencyMs, int submittedChunks, int failedChunks,
-            boolean lastChunkFailed, long nextDeadlineMs) {
+            boolean lastChunkFailed, long nextDeadlineMs, int timeoutDrops, int networkDrops,
+            int qualityDrops, int otherDrops, int degradedTurnStreak,
+            long retryCooldownRemainingMs) {
         if (aiClient == null
                 || !aiClient.isTranscriptCallbackCurrent(sessionSerial, inputSerial)) return;
         if (engine == null || !engine.isRunning()) return;
@@ -480,6 +497,20 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFileFailedChunks = Math.max(0, failedChunks);
         lastFileTailMissing = lastChunkFailed;
         lastFileSttDeadlineMs = Math.max(0L, nextDeadlineMs);
+        lastFileTimeoutDrops = Math.max(0, timeoutDrops);
+        lastFileNetworkDrops = Math.max(0, networkDrops);
+        lastFileQualityDrops = Math.max(0, qualityDrops);
+        lastFileOtherDrops = Math.max(0, otherDrops);
+        lastFileDegradedStreak = Math.max(0, degradedTurnStreak);
+        long safeCooldownMs = Math.max(0L, retryCooldownRemainingMs);
+        lastFileRetryCooldownUntilMs = safeCooldownMs > 0L
+                ? System.currentTimeMillis() + safeCooldownMs : 0L;
+        if (submittedChunks > 0 && failedChunks >= submittedChunks
+                && lastFileTimeoutDrops + lastFileNetworkDrops > 0
+                && fileRetryCooldownRemainingMs() > 0L) {
+            aiStatus = "Слушам • нестабилна връзка";
+            renderStatus();
+        }
         renderDebug();
 
         if (!FileTurnCoveragePolicy.allowSemanticFallback(
@@ -512,6 +543,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         String raw = status == null ? "" : status.trim();
         String lower = raw.toLowerCase(Locale.ROOT);
+        if (!replyWork && lower.startsWith("слушам")
+                && lastFileDegradedStreak >= 2
+                && fileRetryCooldownRemainingMs() > 0L) {
+            raw = "Слушам • нестабилна връзка";
+            lower = raw.toLowerCase(Locale.ROOT);
+        }
         if (lower.contains("мисля") || lower.contains("генерирам")) {
             thinkingStartedAtMs = System.currentTimeMillis();
             lastFirstReplyLatencyMs = -1L;
@@ -945,7 +982,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 ? "mic —"
                 : String.format(Locale.US, "mic %.0f dB%s", latestSnapshot.dbfs,
                 latestSnapshot.clientSilenced ? " • BLOCKED" : "");
-        String rt = " • RT " + realtimeState;
+        String rt = " • RT " + realtimeState
+                + (realtimeStateSerial > 0L ? "@" + realtimeStateSerial : "");
         String heard = lastTranscript.isEmpty() ? "" : "\nЧух: " + shorten(lastTranscript, 115);
         String partial = realtimePartial.isEmpty() ? "" : "\nRT partial: " + shorten(realtimePartial, 100);
         String latency = "\n~end→text " + latencyLabel(lastSttLatencyMs)
@@ -958,7 +996,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 + Math.max(0, lastFileSubmittedChunks - lastFileFailedChunks) + "/"
                 + lastFileSubmittedChunks + ")"
                 + (lastFileTailMissing ? " • tail-missing" : "")
-                + " • budget " + latencyLabel(lastFileSttDeadlineMs);
+                + " • drops t/n/q/o " + lastFileTimeoutDrops + "/"
+                + lastFileNetworkDrops + "/" + lastFileQualityDrops + "/" + lastFileOtherDrops
+                + " • budget " + latencyLabel(lastFileSttDeadlineMs)
+                + (lastFileDegradedStreak > 0 ? " • degraded×" + lastFileDegradedStreak : "")
+                + (fileRetryCooldownRemainingMs() > 0L
+                ? " • retry-cd " + latencyLabel(fileRetryCooldownRemainingMs()) : "");
         String semanticLifecycle = lastSemanticTerminal.isEmpty() ? ""
                 : "\nsem-end " + lastSemanticTerminal
                 + (lastSemanticDecisionAttempts > 0
@@ -982,8 +1025,19 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFileFailedChunks = 0;
         lastFileTailMissing = false;
         lastFileSttDeadlineMs = -1L;
+        lastFileTimeoutDrops = 0;
+        lastFileNetworkDrops = 0;
+        lastFileQualityDrops = 0;
+        lastFileOtherDrops = 0;
+        lastFileDegradedStreak = 0;
+        lastFileRetryCooldownUntilMs = 0L;
         lastSemanticTerminal = "";
         lastSemanticDecisionAttempts = 0;
+    }
+
+    private long fileRetryCooldownRemainingMs() {
+        if (lastFileRetryCooldownUntilMs <= 0L) return 0L;
+        return Math.max(0L, lastFileRetryCooldownUntilMs - System.currentTimeMillis());
     }
 
     private static String latencyLabel(long ms) {

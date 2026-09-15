@@ -28,7 +28,9 @@ final class OpenAiCopilotClient {
         void onFileTurnComplete(long sessionSerial, long inputSerial, String turnFocus,
                                 boolean mainReplyQueued, long drainLatencyMs,
                                 int submittedChunks, int failedChunks, boolean lastChunkFailed,
-                                long nextDeadlineMs);
+                                long nextDeadlineMs, int timeoutDrops, int networkDrops,
+                                int qualityDrops, int otherDrops, int degradedTurnStreak,
+                                long retryCooldownRemainingMs);
         void onStatus(long sessionSerial, long workSerial, boolean replyWork, String status);
     }
 
@@ -53,17 +55,20 @@ final class OpenAiCopilotClient {
         final long sessionSerial;
         final long inputSerial;
         final int chunkIndex;
+        final boolean allowRetry;
         private volatile HttpURLConnection activeConnection;
         private volatile boolean cancelled;
         private boolean failureRecorded;
 
-        AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial, int chunkIndex) {
+        AudioItem(short[] samples, int sampleRate, long sessionSerial, long inputSerial,
+                  int chunkIndex, boolean allowRetry) {
             this.samples = samples;
             this.sampleRate = sampleRate;
             this.createdAtMs = System.currentTimeMillis();
             this.sessionSerial = sessionSerial;
             this.inputSerial = inputSerial;
             this.chunkIndex = chunkIndex;
+            this.allowRetry = allowRetry;
         }
 
         synchronized boolean markFailureOnce() {
@@ -164,6 +169,13 @@ final class OpenAiCopilotClient {
     private int fileTurnSubmittedChunks;
     private int fileTurnFailedChunks;
     private int fileTurnLastFailedChunkIndex;
+    private int fileTurnUsableChunks;
+    private int fileTurnTimeoutDrops;
+    private int fileTurnNetworkDrops;
+    private int fileTurnQualityDrops;
+    private int fileTurnOtherDrops;
+    private int fileSttDegradedTurnStreak;
+    private long fileSttRetryCooldownUntilMs;
     private long lastReplyAtMs;
     private long firstSpeechAtMs;
     private long lastTranscriptAtMs;
@@ -188,10 +200,17 @@ final class OpenAiCopilotClient {
         fileTurnSerial = -1L;
         fileTurnFocus = "";
         fileSttCommitDeadlineMs = AdaptiveFileSttDeadlinePolicy.initialDeadlineMs();
+        fileSttRetryCooldownUntilMs = 0L;
+        fileSttDegradedTurnStreak = 0;
         fileTurnHadSttTimeout = false;
         fileTurnSubmittedChunks = 0;
         fileTurnFailedChunks = 0;
         fileTurnLastFailedChunkIndex = 0;
+        fileTurnUsableChunks = 0;
+        fileTurnTimeoutDrops = 0;
+        fileTurnNetworkDrops = 0;
+        fileTurnQualityDrops = 0;
+        fileTurnOtherDrops = 0;
         recentTurns.clear();
         summary = "";
         lastDirectReply = "";
@@ -216,6 +235,11 @@ final class OpenAiCopilotClient {
         fileTurnSubmittedChunks = 0;
         fileTurnFailedChunks = 0;
         fileTurnLastFailedChunkIndex = 0;
+        fileTurnUsableChunks = 0;
+        fileTurnTimeoutDrops = 0;
+        fileTurnNetworkDrops = 0;
+        fileTurnQualityDrops = 0;
+        fileTurnOtherDrops = 0;
         audioExecutor.cancelPending();
         audioHttp.cancelAll();
         replyHttp.cancelAll();
@@ -234,6 +258,11 @@ final class OpenAiCopilotClient {
         fileTurnSubmittedChunks = 0;
         fileTurnFailedChunks = 0;
         fileTurnLastFailedChunkIndex = 0;
+        fileTurnUsableChunks = 0;
+        fileTurnTimeoutDrops = 0;
+        fileTurnNetworkDrops = 0;
+        fileTurnQualityDrops = 0;
+        fileTurnOtherDrops = 0;
         audioExecutor.cancelPending();
         audioHttp.cancelAll();
         replyHttp.cancelAll();
@@ -268,6 +297,11 @@ final class OpenAiCopilotClient {
             fileTurnSubmittedChunks = 0;
             fileTurnFailedChunks = 0;
             fileTurnLastFailedChunkIndex = 0;
+            fileTurnUsableChunks = 0;
+            fileTurnTimeoutDrops = 0;
+            fileTurnNetworkDrops = 0;
+            fileTurnQualityDrops = 0;
+            fileTurnOtherDrops = 0;
             audioExecutor.cancelPending();
             audioHttp.cancelAll();
             replyHttp.cancelAll();
@@ -314,8 +348,10 @@ final class OpenAiCopilotClient {
         latestReplySerial++;
         replyHttp.cancelAll();
         int chunkIndex = ++fileTurnSubmittedChunks;
+        boolean allowRetry = FileSttRecoveryPolicy.allowRetry(
+                System.currentTimeMillis(), fileSttRetryCooldownUntilMs);
         AudioItem item = new AudioItem(
-                samples.clone(), sampleRate, sessionSerial, inputSerial, chunkIndex);
+                samples.clone(), sampleRate, sessionSerial, inputSerial, chunkIndex, allowRetry);
         long deadlineMs = fileSttCommitDeadlineMs;
         audioExecutor.submit(
                 () -> transcribeAudioIfFresh(item),
@@ -324,23 +360,46 @@ final class OpenAiCopilotClient {
                         // Drop only the overdue chunk. Later same-turn chunks can
                         // still commit in order and feed the final turn reply.
                         item.cancel();
-                        noteFileSttFailure(item, true);
+                        noteFileSttFailure(item, FileSttRecoveryPolicy.DropReason.TIMEOUT);
                         listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
                         return;
                     }
-                    if (error != null || raw == null) noteFileSttFailure(item, false);
                     processAudioResult(item, raw, error);
                 },
                 deadlineMs);
     }
 
-    private synchronized void noteFileSttFailure(AudioItem item, boolean timedOut) {
+    private synchronized void noteFileSttFailure(
+            AudioItem item, FileSttRecoveryPolicy.DropReason reason) {
         if (item == null || closed || !item.markFailureOnce()) return;
         if (item.sessionSerial != sessionSerial || item.inputSerial != latestInputSerial) return;
         if (item.chunkIndex <= 0 || item.chunkIndex > fileTurnSubmittedChunks) return;
         fileTurnFailedChunks = Math.min(fileTurnSubmittedChunks, fileTurnFailedChunks + 1);
         fileTurnLastFailedChunkIndex = Math.max(fileTurnLastFailedChunkIndex, item.chunkIndex);
-        if (timedOut) fileTurnHadSttTimeout = true;
+        FileSttRecoveryPolicy.DropReason safeReason = reason == null
+                ? FileSttRecoveryPolicy.DropReason.OTHER : reason;
+        switch (safeReason) {
+            case TIMEOUT:
+                fileTurnTimeoutDrops++;
+                fileTurnHadSttTimeout = true;
+                break;
+            case NETWORK:
+                fileTurnNetworkDrops++;
+                break;
+            case QUALITY:
+                fileTurnQualityDrops++;
+                break;
+            default:
+                fileTurnOtherDrops++;
+                break;
+        }
+    }
+
+    private synchronized void noteFileSttSuccess(AudioItem item) {
+        if (item == null || closed) return;
+        if (item.sessionSerial != sessionSerial || item.inputSerial != latestInputSerial) return;
+        if (item.chunkIndex <= 0 || item.chunkIndex > fileTurnSubmittedChunks) return;
+        fileTurnUsableChunks = Math.min(fileTurnSubmittedChunks, fileTurnUsableChunks + 1);
     }
 
     synchronized void finishAudioTurn(long inputSerial) {
@@ -366,21 +425,28 @@ final class OpenAiCopilotClient {
     private void processAudioResult(AudioItem item, String raw, Throwable error) {
         if (item == null || !shouldProcessAudioResult(item)) return;
         if (error != null) {
+            noteFileSttFailure(item, FileSttRecoveryPolicy.isNetworkLike(error)
+                    ? FileSttRecoveryPolicy.DropReason.NETWORK
+                    : FileSttRecoveryPolicy.DropReason.OTHER);
             // Newer speech/pause cancellation is expected and fails freshness above.
             if (shouldSurfaceAudioResult(item)) {
                 listener.onStatus(item.sessionSerial, item.inputSerial, false, "AI връзката прекъсна");
             }
             return;
         }
-        if (raw == null) return;
+        if (raw == null) {
+            noteFileSttFailure(item, FileSttRecoveryPolicy.DropReason.OTHER);
+            return;
+        }
         if (TranscriptQualityPolicy.isLowQuality(raw)) {
             // A current speech chunk that produced unusable STT still lowers turn
             // coverage. This prevents a misleading 100% confidence score when the
             // network succeeded but recognition did not yield usable text.
-            noteFileSttFailure(item, false);
+            noteFileSttFailure(item, FileSttRecoveryPolicy.DropReason.QUALITY);
             listener.onStatus(item.sessionSerial, item.inputSerial, false, "Слушам");
             return;
         }
+        noteFileSttSuccess(item);
 
         long now = System.currentTimeMillis();
         String focus;
@@ -428,6 +494,12 @@ final class OpenAiCopilotClient {
         int failedChunks;
         boolean lastChunkFailed;
         long nextDeadlineMs;
+        int timeoutDrops;
+        int networkDrops;
+        int qualityDrops;
+        int otherDrops;
+        int degradedTurnStreak;
+        long retryCooldownRemainingMs;
         long now = System.currentTimeMillis();
         long drainLatencyMs = Math.max(0L, now - end.createdAtMs);
         synchronized (this) {
@@ -445,6 +517,27 @@ final class OpenAiCopilotClient {
             failedChunks = fileTurnFailedChunks;
             lastChunkFailed = submittedChunks > 0
                     && fileTurnLastFailedChunkIndex == submittedChunks;
+            timeoutDrops = fileTurnTimeoutDrops;
+            networkDrops = fileTurnNetworkDrops;
+            qualityDrops = fileTurnQualityDrops;
+            otherDrops = fileTurnOtherDrops;
+
+            boolean degraded = FileSttRecoveryPolicy.shouldDegradeTurn(
+                    submittedChunks, fileTurnUsableChunks, timeoutDrops, networkDrops);
+            if (degraded) {
+                fileSttDegradedTurnStreak++;
+                long cooldownMs = FileSttRecoveryPolicy.cooldownMsForStreak(
+                        fileSttDegradedTurnStreak);
+                if (cooldownMs > 0L) {
+                    fileSttRetryCooldownUntilMs = Math.max(
+                            fileSttRetryCooldownUntilMs, now + cooldownMs);
+                }
+            } else if (fileTurnUsableChunks > 0) {
+                fileSttDegradedTurnStreak = 0;
+                fileSttRetryCooldownUntilMs = 0L;
+            }
+            degradedTurnStreak = fileSttDegradedTurnStreak;
+            retryCooldownRemainingMs = Math.max(0L, fileSttRetryCooldownUntilMs - now);
 
             turnFocus = fileTurnFocus;
             fileTurnSerial = -1L;
@@ -453,6 +546,11 @@ final class OpenAiCopilotClient {
             fileTurnSubmittedChunks = 0;
             fileTurnFailedChunks = 0;
             fileTurnLastFailedChunkIndex = 0;
+            fileTurnUsableChunks = 0;
+            fileTurnTimeoutDrops = 0;
+            fileTurnNetworkDrops = 0;
+            fileTurnQualityDrops = 0;
+            fileTurnOtherDrops = 0;
             if (!isTurnEndSurfaceableLocked(end, now)) return;
             reference = lastReplyAtMs > 0L ? lastReplyAtMs : firstSpeechAtMs;
         }
@@ -467,7 +565,9 @@ final class OpenAiCopilotClient {
         // for conservative semantic fallback, and re-validates freshness on main.
         listener.onFileTurnComplete(
                 end.sessionSerial, end.inputSerial, turnFocus, mainReplyQueued, drainLatencyMs,
-                submittedChunks, failedChunks, lastChunkFailed, nextDeadlineMs);
+                submittedChunks, failedChunks, lastChunkFailed, nextDeadlineMs,
+                timeoutDrops, networkDrops, qualityDrops, otherDrops,
+                degradedTurnStreak, retryCooldownRemainingMs);
         if (!mainReplyQueued) {
             listener.onStatus(end.sessionSerial, end.inputSerial, false, "Слушам");
         }
@@ -719,7 +819,8 @@ final class OpenAiCopilotClient {
     private String transcribe(String key, AudioItem item) throws Exception {
         byte[] wav = wav(item.samples, item.sampleRate);
         Exception last = null;
-        for (int attempt = 0; attempt < 2; attempt++) {
+        int maxAttempts = item.allowRetry ? 2 : 1;
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
             try {
                 if (!shouldProcessAudioResult(item)) {
                     throw new java.io.InterruptedIOException("stale transcription");
@@ -734,7 +835,8 @@ final class OpenAiCopilotClient {
                 // Never retry stale audio and keep the parallel STT workers available.
                 if (!shouldProcessAudioResult(item)) throw e;
             }
-            if (attempt == 0) {
+            if (attempt + 1 < maxAttempts) {
+                if (!FileSttRecoveryPolicy.shouldRetryFailure(last, attempt + 1, item.allowRetry)) break;
                 if (!shouldProcessAudioResult(item)) {
                     throw new java.io.InterruptedIOException("stale transcription");
                 }
