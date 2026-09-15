@@ -16,7 +16,7 @@ final class RealtimeRoutingPolicy {
     static final long ROUTE_LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     static final long ROUTE_LATENCY_FILE_MARGIN_MS = 700L;
     static final long ROUTE_LATENCY_CONFIDENCE_MAX_EXTRA_MARGIN_MS = 1_200L;
-    static final long ROUTE_LATENCY_MIN_SAMPLE_EXTRA_MARGIN_MS = 50L;
+    static final long ROUTE_LATENCY_MIN_SAMPLE_EXTRA_MARGIN_MS = 100L;
     static final int ROUTE_LATENCY_FULL_CONFIDENCE_SAMPLES = 4;
     static final long MAX_ROUTE_LATENCY_JITTER_MS = 5_000L;
     static final long MAX_ROUTE_LATENCY_SAMPLE_MS = 12_000L;
@@ -237,8 +237,9 @@ final class RealtimeRoutingPolicy {
                 Math.min(MAX_ROUTE_LATENCY_SAMPLES, fileSamples));
         int sampleShortfall = Math.max(
                 0, ROUTE_LATENCY_FULL_CONFIDENCE_SAMPLES - minimumSamples);
-        long sampleExtraMarginMs = sampleShortfall
-                * ROUTE_LATENCY_MIN_SAMPLE_EXTRA_MARGIN_MS;
+        long sampleExtraMarginMs = excessJitterMs > 0L
+                ? sampleShortfall * ROUTE_LATENCY_MIN_SAMPLE_EXTRA_MARGIN_MS
+                : 0L;
         return ROUTE_LATENCY_FILE_MARGIN_MS + jitterExtraMarginMs + sampleExtraMarginMs;
     }
 
