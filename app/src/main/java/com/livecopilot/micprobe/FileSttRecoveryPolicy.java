@@ -20,6 +20,11 @@ final class FileSttRecoveryPolicy {
         return cooldownUntilMs <= 0L || nowMs >= cooldownUntilMs;
     }
 
+    static boolean shouldRetryFailure(Throwable error, int completedAttempts,
+                                      boolean retryAllowed) {
+        return retryAllowed && completedAttempts < 2 && isNetworkLike(error);
+    }
+
     static boolean shouldDegradeTurn(int submittedChunks, int usableChunks,
                                      int timeoutDrops, int networkDrops) {
         return submittedChunks > 0
