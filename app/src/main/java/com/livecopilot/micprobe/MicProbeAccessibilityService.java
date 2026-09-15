@@ -636,6 +636,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
         if (primaryOnly) {
             semanticPrimaryAppliedAtMs = now;
+            String lower = aiStatus == null ? "" : aiStatus.toLowerCase(Locale.ROOT);
+            if (lower.contains("мисля") || lower.contains("проверявам")) {
+                aiStatus = "Слушам";
+                renderStatus();
+            }
         }
         // Terminal cleanup is owned by handleSemanticFinished(). This avoids leaving
         // direct-only or failed-style requests permanently active.
@@ -817,6 +822,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
             if (realtimeTranscriber != null) realtimeTranscriber.stop();
             pausedAtMs = System.currentTimeMillis();
             if (semanticFallback != null) semanticFallback.invalidate();
+            if (activeSemanticRequestId >= 0L) {
+                lastSemanticTerminal = "cancelled";
+                lastSemanticDecisionAttempts = 0;
+            }
             activeSemanticRequestId = -1L;
             activeSemanticEpoch = -1L;
             semanticPrimaryAppliedAtMs = 0L;
