@@ -199,7 +199,7 @@ public class RealtimeRoutingPolicyTest {
 
     @Test
     public void fileOutcomeNeedsUsefulFocusAndCoverage() {
-        assertTrue(RealtimeRoutingPolicy.isUsableFileOutcome(true, 3, 1, false));
+        assertTrue(RealtimeRoutingPolicy.isUsableFileOutcome(true, 4, 1, false));
         assertFalse(RealtimeRoutingPolicy.isUsableFileOutcome(true, 3, 2, false));
         assertFalse(RealtimeRoutingPolicy.isUsableFileOutcome(true, 3, 0, true));
         assertFalse(RealtimeRoutingPolicy.isUsableFileOutcome(false, 3, 0, false));
