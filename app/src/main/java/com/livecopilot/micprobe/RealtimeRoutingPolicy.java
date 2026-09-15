@@ -28,6 +28,13 @@ final class RealtimeRoutingPolicy {
     static final long ROUTE_LATENCY_SWITCH_MIN_EXTRA_MARGIN_MS = 200L;
     static final long ROUTE_LATENCY_SWITCH_MAX_EXTRA_MARGIN_MS = 500L;
     static final long ROUTE_LATENCY_SWITCH_LOW_CONFIDENCE_EXTRA_MARGIN_MS = 200L;
+    static final long ROUTE_FLAP_WINDOW_MS = 20_000L;
+    static final long ROUTE_FLAP_MARGIN_STEP_MS = 200L;
+    static final long ROUTE_FLAP_MAX_EXTRA_MARGIN_MS = 600L;
+    static final int ROUTE_FLAP_MAX_SCORE = 3;
+    static final int ROUTE_PERFORMANCE_ROUTE_UNKNOWN = -1;
+    static final int ROUTE_PERFORMANCE_ROUTE_REALTIME = 0;
+    static final int ROUTE_PERFORMANCE_ROUTE_FILE = 1;
     static final int ROUTE_LATENCY_FULL_CONFIDENCE_SAMPLES = 4;
     static final int ROUTE_LATENCY_MATURE_SWITCH_SAMPLES = 6;
     static final long MAX_ROUTE_LATENCY_JITTER_MS = 5_000L;
@@ -265,6 +272,46 @@ final class RealtimeRoutingPolicy {
         return ROUTE_LATENCY_FILE_MARGIN_MS + jitterExtraMarginMs + sampleExtraMarginMs;
     }
 
+    static int activeRouteFlapScore(int currentScore, long lastDecisionAtMs, long nowMs) {
+        int safe = Math.max(0, Math.min(ROUTE_FLAP_MAX_SCORE, currentScore));
+        if (safe <= 0) return 0;
+        if (lastDecisionAtMs <= 0L || nowMs < lastDecisionAtMs
+                || nowMs - lastDecisionAtMs > ROUTE_FLAP_WINDOW_MS) return 0;
+        return safe;
+    }
+
+    static int nextRouteFlapScore(int currentScore, int previousRoute,
+                                  long previousDecisionAtMs, int nextRoute, long nowMs) {
+        int safe = Math.max(0, Math.min(ROUTE_FLAP_MAX_SCORE, currentScore));
+        boolean previousRouteKnown = previousRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || previousRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        boolean nextRouteKnown = nextRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || nextRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        boolean previousFresh = previousDecisionAtMs > 0L
+                && nowMs >= previousDecisionAtMs
+                && nowMs - previousDecisionAtMs <= ROUTE_FLAP_WINDOW_MS;
+        if (!nextRouteKnown) return activeRouteFlapScore(safe, previousDecisionAtMs, nowMs);
+        if (!previousRouteKnown || !previousFresh) return 0;
+        if (nextRoute != previousRoute) {
+            return Math.min(ROUTE_FLAP_MAX_SCORE, safe + 1);
+        }
+        return Math.max(0, safe - 1);
+    }
+
+    static long routeFlapExtraMarginMs(int routeFlapScore) {
+        int safe = Math.max(0, Math.min(ROUTE_FLAP_MAX_SCORE, routeFlapScore));
+        return Math.min(ROUTE_FLAP_MAX_EXTRA_MARGIN_MS,
+                safe * ROUTE_FLAP_MARGIN_STEP_MS);
+    }
+
+    static boolean isTrackableRouteDecisionReason(String reason) {
+        return "file-faster".equals(reason)
+                || "switch-guard".equals(reason)
+                || "flap-damp".equals(reason)
+                || "rt-margin".equals(reason)
+                || "rt-ready".equals(reason);
+    }
+
     static long adaptiveRouteLatencySwitchGuardMs(
             long realtimeJitterMs, int realtimeSamples,
             long fileJitterMs, int fileSamples) {
@@ -336,9 +383,19 @@ final class RealtimeRoutingPolicy {
     static long routeLatencySwitchMarginMs(
             long realtimeJitterMs, int realtimeSamples, long realtimeSampleAtMs,
             long fileJitterMs, int fileSamples, long fileSampleAtMs, long nowMs) {
+        return routeLatencySwitchMarginMs(
+                realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileJitterMs, fileSamples, fileSampleAtMs, nowMs, 0);
+    }
+
+    static long routeLatencySwitchMarginMs(
+            long realtimeJitterMs, int realtimeSamples, long realtimeSampleAtMs,
+            long fileJitterMs, int fileSamples, long fileSampleAtMs, long nowMs,
+            int routeFlapScore) {
         long baseMarginMs = routeLatencyPreferenceMarginMs(
                 realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
         if (baseMarginMs == Long.MAX_VALUE) return Long.MAX_VALUE;
+        baseMarginMs += routeFlapExtraMarginMs(routeFlapScore);
         long switchGuardMs = adaptiveRouteLatencySwitchGuardMs(
                 realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
         boolean newerFileEvidence = fileSampleAtMs > realtimeSampleAtMs;
@@ -366,12 +423,21 @@ final class RealtimeRoutingPolicy {
             long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
             long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
             int fileSamples, long fileSampleAtMs, long nowMs) {
+        return hasGuardedFileLatencyAdvantage(
+                realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs, 0);
+    }
+
+    static boolean hasGuardedFileLatencyAdvantage(
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs, int routeFlapScore) {
         long realtimeRiskMs = riskAdjustedRouteLatency(realtimeEstimateMs, realtimeJitterMs);
         long fileRiskMs = riskAdjustedRouteLatency(fileEstimateMs, fileJitterMs);
         if (realtimeRiskMs < 0L || fileRiskMs < 0L) return false;
         long requiredMarginMs = routeLatencySwitchMarginMs(
                 realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
-                fileJitterMs, fileSamples, fileSampleAtMs, nowMs);
+                fileJitterMs, fileSamples, fileSampleAtMs, nowMs, routeFlapScore);
         if (requiredMarginMs == Long.MAX_VALUE) return false;
         return realtimeRiskMs - fileRiskMs >= requiredMarginMs;
     }
@@ -402,13 +468,23 @@ final class RealtimeRoutingPolicy {
             long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
             long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
             int fileSamples, long fileSampleAtMs, long nowMs) {
+        return realtimeProbeRemainingMs(
+                realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs, 0);
+    }
+
+    static long realtimeProbeRemainingMs(
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs, int routeFlapScore) {
         if (realtimeSamples < MIN_ROUTE_LATENCY_SAMPLES
                 || fileSamples < MIN_ROUTE_LATENCY_SAMPLES) return 0L;
         if (!isRouteLatencyFresh(fileSampleAtMs, nowMs)
                 || realtimeSampleAtMs <= 0L || nowMs < realtimeSampleAtMs) return 0L;
         if (!hasGuardedFileLatencyAdvantage(
                 realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
-                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs)) return 0L;
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs,
+                routeFlapScore)) return 0L;
         long intervalMs = adaptiveRealtimeProbeIntervalMs(
                 realtimeEstimateMs, realtimeJitterMs, fileEstimateMs, fileJitterMs);
         if (intervalMs <= 0L) return 0L;
@@ -420,28 +496,43 @@ final class RealtimeRoutingPolicy {
             long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
             long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
             int fileSamples, long fileSampleAtMs, long nowMs) {
+        return routeLatencyDecisionReason(
+                realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs, 0);
+    }
+
+    static String routeLatencyDecisionReason(
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs, int routeFlapScore) {
         long riskGapMs = routeLatencyRiskGapMs(
                 realtimeEstimateMs, realtimeJitterMs, fileEstimateMs, fileJitterMs);
-        long baseMarginMs = routeLatencyPreferenceMarginMs(
+        long rawBaseMarginMs = routeLatencyPreferenceMarginMs(
                 realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
-        if (riskGapMs == Long.MIN_VALUE || baseMarginMs == Long.MAX_VALUE) return "learning";
+        if (riskGapMs == Long.MIN_VALUE || rawBaseMarginMs == Long.MAX_VALUE) return "learning";
         if (!isRouteLatencyFresh(fileSampleAtMs, nowMs)) return "file-stale";
         if (realtimeSampleAtMs <= 0L || nowMs < realtimeSampleAtMs) return "rt-clock";
 
+        long flapExtraMarginMs = routeFlapExtraMarginMs(routeFlapScore);
+        long effectiveBaseMarginMs = rawBaseMarginMs + flapExtraMarginMs;
         long probeRemainingMs = realtimeProbeRemainingMs(
                 realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
-                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs);
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs,
+                routeFlapScore);
         if (probeRemainingMs > 0L) return "file-faster";
 
         long requiredMarginMs = routeLatencySwitchMarginMs(
                 realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
-                fileJitterMs, fileSamples, fileSampleAtMs, nowMs);
+                fileJitterMs, fileSamples, fileSampleAtMs, nowMs, routeFlapScore);
         long guardRemainingMs = routeLatencySwitchGuardRemainingMs(
                 realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
                 fileJitterMs, fileSamples, fileSampleAtMs, nowMs);
         if (guardRemainingMs > 0L
-                && riskGapMs >= baseMarginMs
+                && riskGapMs >= effectiveBaseMarginMs
                 && riskGapMs < requiredMarginMs) return "switch-guard";
+        if (flapExtraMarginMs > 0L
+                && riskGapMs >= rawBaseMarginMs
+                && riskGapMs < effectiveBaseMarginMs) return "flap-damp";
 
         long intervalMs = adaptiveRealtimeProbeIntervalMs(
                 realtimeEstimateMs, realtimeJitterMs, fileEstimateMs, fileJitterMs);
@@ -450,7 +541,7 @@ final class RealtimeRoutingPolicy {
                 && riskGapMs >= requiredMarginMs
                 && intervalMs > 0L
                 && elapsedMs >= intervalMs) return "rt-probe";
-        if (riskGapMs < baseMarginMs) return "rt-margin";
+        if (riskGapMs < effectiveBaseMarginMs) return "rt-margin";
         return "rt-ready";
     }
 
@@ -458,9 +549,19 @@ final class RealtimeRoutingPolicy {
             long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
             long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
             int fileSamples, long fileSampleAtMs, long nowMs) {
+        return shouldPreferFileForLatency(
+                realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs, 0);
+    }
+
+    static boolean shouldPreferFileForLatency(
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs, int routeFlapScore) {
         return realtimeProbeRemainingMs(
                 realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
-                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs) > 0L;
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs,
+                routeFlapScore) > 0L;
     }
 
     private static boolean isRouteLatencyFresh(long sampleAtMs, long nowMs) {
