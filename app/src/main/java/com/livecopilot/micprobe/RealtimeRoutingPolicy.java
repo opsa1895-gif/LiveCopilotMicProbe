@@ -15,10 +15,11 @@ final class RealtimeRoutingPolicy {
     static final long PENALTY_DECAY_STEP_MS = 15_000L;
     static final long ROUTE_LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
     static final long ROUTE_LATENCY_FILE_MARGIN_MS = 700L;
+    static final long MAX_ROUTE_LATENCY_JITTER_MS = 5_000L;
     static final int MAX_OUTCOME_PENALTY = 4;
     static final int MAX_LATENCY_PENALTY = 4;
     static final int GOOD_REALTIME_RESET_STREAK = 2;
-    static final int MIN_ROUTE_LATENCY_SAMPLES = 2;
+    static final int MIN_ROUTE_LATENCY_SAMPLES = 3;
     static final int MAX_ROUTE_LATENCY_SAMPLES = 8;
 
     private RealtimeRoutingPolicy() {}
@@ -78,15 +79,42 @@ final class RealtimeRoutingPolicy {
         return Math.min(MAX_ROUTE_LATENCY_SAMPLES, safe + 1);
     }
 
+    static boolean isRealtimePerformanceSampleEligible(
+            boolean acceptedUseful, boolean fileRecovery, long latencyMs) {
+        return acceptedUseful && !fileRecovery && latencyMs >= 0L;
+    }
+
+    static long nextRouteLatencyJitter(long currentJitterMs, long currentEstimateMs,
+                                       int currentSamples, long sampleMs) {
+        if (sampleMs < 0L) return currentJitterMs;
+        if (currentEstimateMs < 0L || currentSamples <= 0) return 0L;
+        long deviation = Math.abs(sampleMs - currentEstimateMs);
+        if (currentSamples <= 1 || currentJitterMs < 0L) {
+            return Math.min(MAX_ROUTE_LATENCY_JITTER_MS, deviation);
+        }
+        long safeJitter = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_JITTER_MS, currentJitterMs));
+        long next = (safeJitter * 3L + deviation + 2L) / 4L;
+        return Math.min(MAX_ROUTE_LATENCY_JITTER_MS, Math.max(0L, next));
+    }
+
+    static long riskAdjustedRouteLatency(long estimateMs, long jitterMs) {
+        if (estimateMs < 0L || jitterMs < 0L) return -1L;
+        long safeJitter = Math.min(MAX_ROUTE_LATENCY_JITTER_MS, jitterMs);
+        return estimateMs + Math.max(0L, safeJitter);
+    }
+
     static boolean shouldPreferFileForLatency(
-            long realtimeEstimateMs, int realtimeSamples, long realtimeSampleAtMs,
-            long fileEstimateMs, int fileSamples, long fileSampleAtMs, long nowMs) {
-        if (realtimeEstimateMs < 0L || fileEstimateMs < 0L) return false;
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs) {
         if (realtimeSamples < MIN_ROUTE_LATENCY_SAMPLES
                 || fileSamples < MIN_ROUTE_LATENCY_SAMPLES) return false;
         if (!isRouteLatencyFresh(realtimeSampleAtMs, nowMs)
                 || !isRouteLatencyFresh(fileSampleAtMs, nowMs)) return false;
-        return realtimeEstimateMs - fileEstimateMs >= ROUTE_LATENCY_FILE_MARGIN_MS;
+        long realtimeRiskMs = riskAdjustedRouteLatency(realtimeEstimateMs, realtimeJitterMs);
+        long fileRiskMs = riskAdjustedRouteLatency(fileEstimateMs, fileJitterMs);
+        if (realtimeRiskMs < 0L || fileRiskMs < 0L) return false;
+        return realtimeRiskMs - fileRiskMs >= ROUTE_LATENCY_FILE_MARGIN_MS;
     }
 
     private static boolean isRouteLatencyFresh(long sampleAtMs, long nowMs) {

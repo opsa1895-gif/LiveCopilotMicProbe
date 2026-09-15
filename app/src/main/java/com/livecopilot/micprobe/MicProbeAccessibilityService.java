@@ -1074,6 +1074,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 ? -1L : realtimeTranscriber.realtimeRouteLatencyEstimateMs();
         long fileRouteEstimateMs = realtimeTranscriber == null
                 ? -1L : realtimeTranscriber.fileRouteLatencyEstimateMs();
+        long realtimeRouteJitterMs = realtimeTranscriber == null
+                ? -1L : realtimeTranscriber.realtimeRouteLatencyJitterMs();
+        long fileRouteJitterMs = realtimeTranscriber == null
+                ? -1L : realtimeTranscriber.fileRouteLatencyJitterMs();
         String rt = " • RT " + realtimeState
                 + (realtimeStateSerial > 0L ? "@" + realtimeStateSerial : "")
                 + (unstableRt > 0 ? " • unstable×" + unstableRt : "")
@@ -1082,8 +1086,12 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 + (goodRealtimeStreak > 0 ? " • good×" + goodRealtimeStreak : "")
                 + (realtimeRouteEstimateMs >= 0L
                 ? " • rt-est " + latencyLabel(realtimeRouteEstimateMs) : "")
+                + (realtimeRouteJitterMs >= 0L
+                ? "±" + latencyLabel(realtimeRouteJitterMs) : "")
                 + (fileRouteEstimateMs >= 0L
                 ? " • file-est " + latencyLabel(fileRouteEstimateMs) : "")
+                + (fileRouteJitterMs >= 0L
+                ? "±" + latencyLabel(fileRouteJitterMs) : "")
                 + (routeBlockMs > 0L ? " • route-cd " + latencyLabel(routeBlockMs) : "")
                 + (transportBlockMs > 0L ? " • net-cd " + latencyLabel(transportBlockMs) : "")
                 + (outcomeBlockMs > 0L ? " • quality-cd " + latencyLabel(outcomeBlockMs) : "");
