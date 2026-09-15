@@ -55,9 +55,24 @@ public class RealtimeRoutingPolicyTest {
         assertEquals(2, RealtimeRoutingPolicy.penaltyAfterBadFile(3));
         assertEquals(0, RealtimeRoutingPolicy.penaltyAfterBadFile(0));
         assertEquals(11_000L,
-                RealtimeRoutingPolicy.shortenBlockAfterBadFile(10_000L, 25_000L));
+                RealtimeRoutingPolicy.shortenOutcomeBlockAfterBadFile(10_000L, 25_000L));
         assertEquals(9_000L,
-                RealtimeRoutingPolicy.shortenBlockAfterBadFile(10_000L, 9_000L));
+                RealtimeRoutingPolicy.shortenOutcomeBlockAfterBadFile(10_000L, 9_000L));
+    }
+
+    @Test
+    public void transportAndOutcomeQuarantinesStayIndependent() {
+        long transportUntil = 25_000L;
+        long outcomeUntil = 25_000L;
+        long shortenedOutcome = RealtimeRoutingPolicy.shortenOutcomeBlockAfterBadFile(
+                10_000L, outcomeUntil);
+
+        assertEquals(11_000L, shortenedOutcome);
+        assertEquals(25_000L, RealtimeRoutingPolicy.effectiveBlockedUntil(
+                transportUntil, shortenedOutcome));
+        assertEquals(25_000L, RealtimeRoutingPolicy.effectiveBlockedUntil(
+                11_000L, 25_000L));
+        assertEquals(0L, RealtimeRoutingPolicy.effectiveBlockedUntil(-1L, 0L));
     }
 
     @Test

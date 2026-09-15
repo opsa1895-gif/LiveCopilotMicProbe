@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 69
-        versionName = "0.68.0-adaptive-stt-routing"
+        versionCode = 70
+        versionName = "0.69.0-isolated-route-quarantines"
     }
 
     compileOptions {

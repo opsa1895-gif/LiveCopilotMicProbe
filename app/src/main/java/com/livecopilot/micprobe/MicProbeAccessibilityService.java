@@ -1055,6 +1055,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 latestSnapshot.clientSilenced ? " • BLOCKED" : "");
         long routeBlockMs = realtimeTranscriber == null
                 ? 0L : realtimeTranscriber.routingBlockRemainingMs();
+        long transportBlockMs = realtimeTranscriber == null
+                ? 0L : realtimeTranscriber.transportBlockRemainingMs();
+        long outcomeBlockMs = realtimeTranscriber == null
+                ? 0L : realtimeTranscriber.outcomeBlockRemainingMs();
         int unstableRt = realtimeTranscriber == null
                 ? 0 : realtimeTranscriber.unstableReadyFailureStreak();
         int routeOutcomePenalty = realtimeTranscriber == null
@@ -1063,7 +1067,9 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 + (realtimeStateSerial > 0L ? "@" + realtimeStateSerial : "")
                 + (unstableRt > 0 ? " • unstable×" + unstableRt : "")
                 + (routeOutcomePenalty > 0 ? " • outcome×" + routeOutcomePenalty : "")
-                + (routeBlockMs > 0L ? " • route-cd " + latencyLabel(routeBlockMs) : "");
+                + (routeBlockMs > 0L ? " • route-cd " + latencyLabel(routeBlockMs) : "")
+                + (transportBlockMs > 0L ? " • net-cd " + latencyLabel(transportBlockMs) : "")
+                + (outcomeBlockMs > 0L ? " • quality-cd " + latencyLabel(outcomeBlockMs) : "");
         String heard = lastTranscript.isEmpty() ? "" : "\nЧух: " + shorten(lastTranscript, 115);
         String partial = realtimePartial.isEmpty() ? "" : "\nRT partial: " + shorten(realtimePartial, 100);
         String latency = "\n~end→text " + latencyLabel(lastSttLatencyMs)
