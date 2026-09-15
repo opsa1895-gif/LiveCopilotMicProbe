@@ -209,6 +209,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         // waiting for a final transcript so an old answer cannot pop over a new turn.
         fileSpeechEpoch = aiClient != null ? aiClient.noteNewSpeech() : -1L;
         if (semanticFallback != null) semanticFallback.invalidate();
+        if (activeSemanticRequestId >= 0L) {
+            lastSemanticTerminal = "cancelled";
+            lastSemanticDecisionAttempts = 0;
+        }
         activeSemanticRequestId = -1L;
         activeSemanticEpoch = -1L;
         semanticPrimaryAppliedAtMs = 0L;
@@ -413,6 +417,10 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         if (lastFileTranscriptAtMs < lastRealtimeTranscriptAtMs) return;
 
         if (semanticFallback != null) semanticFallback.invalidate();
+        if (activeSemanticRequestId >= 0L) {
+            lastSemanticTerminal = "cancelled";
+            lastSemanticDecisionAttempts = 0;
+        }
         activeSemanticRequestId = -1L;
         activeSemanticEpoch = -1L;
         semanticPrimaryAppliedAtMs = 0L;
@@ -551,7 +559,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 focusSnapshot, focusTimeSnapshot, semanticEpochSnapshot, conservativeSnapshot);
     }
 
-    private void requestSemanticFallback(String focus, long focusAtMs, long expectedSemanticEpoch,
+    private synchronized void requestSemanticFallback(String focus, long focusAtMs, long expectedSemanticEpoch,
                                          boolean conservativeInput) {
         if (engine == null || !engine.isRunning() || semanticFallback == null) return;
         if (!SemanticEpochPolicy.shouldRun(expectedSemanticEpoch, semanticEpoch)) return;
@@ -587,7 +595,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         }
     }
 
-    private void applySemanticReply(long requestId, OpenAiCopilotClient.Replies replies) {
+    private synchronized void applySemanticReply(long requestId, OpenAiCopilotClient.Replies replies) {
         if (requestId < 0L || requestId != activeSemanticRequestId) return;
         if (!SemanticEpochPolicy.shouldRun(activeSemanticEpoch, semanticEpoch)) return;
         if (engine == null || !engine.isRunning() || replies == null) return;
@@ -799,7 +807,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         windowManager.addView(overlay, params);
     }
 
-    private void toggleRunning() {
+    private synchronized void toggleRunning() {
         if (engine == null) return;
         if (engine.isRunning()) {
             semanticEpoch++;
