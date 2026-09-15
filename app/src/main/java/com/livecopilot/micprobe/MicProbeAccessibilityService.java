@@ -201,6 +201,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public synchronized void onStreamTurnStart(int sampleRate) {
+        if (engine == null || !engine.isRunning()) return;
         clearFallbackTurnAudio();
         realtimePartial = "";
         semanticEpoch++;
@@ -231,6 +232,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onPcmStream(short[] samples, int sampleRate) {
+        if (engine == null || !engine.isRunning()) return;
         // Capture the exact stream once, without the engine's forced-split overlap.
         // If Realtime dies mid-turn we keep buffering the rest for one clean file STT.
         if (realtimeBackupStreaming) appendFallbackTurnAudio(samples, sampleRate);
@@ -243,6 +245,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
 
     @Override
     public void onStreamTurnEnd() {
+        if (engine == null || !engine.isRunning()) return;
         boolean hadRealtimeBackup = realtimeBackupStreaming;
         boolean committed = hadRealtimeBackup
                 && realtimeTurnActive
@@ -812,7 +815,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         windowManager.addView(overlay, params);
     }
 
-    private synchronized void toggleRunning() {
+    private void toggleRunning() {
         if (engine == null) return;
         if (engine.isRunning()) {
             semanticEpoch++;
