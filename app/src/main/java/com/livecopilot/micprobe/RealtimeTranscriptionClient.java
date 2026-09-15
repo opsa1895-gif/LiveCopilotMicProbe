@@ -72,6 +72,7 @@ final class RealtimeTranscriptionClient {
     private long stateSerial;
     private long readyAtMs;
     private int unstableReadyFailureStreak;
+    private int routingOutcomePenalty;
     private long routingBlockedUntilMs;
     private long latestRecoveryId;
     private int activeBackupSampleRate = 16_000;
@@ -113,6 +114,7 @@ final class RealtimeTranscriptionClient {
         partial.setLength(0);
         readyAtMs = 0L;
         unstableReadyFailureStreak = 0;
+        routingOutcomePenalty = 0;
         routingBlockedUntilMs = 0L;
         clearBackupsLocked();
         WebSocket old = socket;
@@ -253,6 +255,31 @@ final class RealtimeTranscriptionClient {
 
     synchronized int unstableReadyFailureStreak() {
         return Math.max(0, unstableReadyFailureStreak);
+    }
+
+    synchronized int routingOutcomePenalty() {
+        return Math.max(0, routingOutcomePenalty);
+    }
+
+    synchronized void noteRealtimeTranscriptOutcome(boolean acceptedUseful, boolean fileRecovery) {
+        if (closed || !wanted) return;
+        routingOutcomePenalty = RealtimeRoutingPolicy.nextOutcomePenalty(
+                routingOutcomePenalty, acceptedUseful, fileRecovery);
+        if (acceptedUseful && !fileRecovery) return;
+
+        long blockMs = RealtimeRoutingPolicy.blockMsForOutcomePenalty(routingOutcomePenalty);
+        if (blockMs <= 0L) return;
+        long now = System.currentTimeMillis();
+        routingBlockedUntilMs = Math.max(routingBlockedUntilMs, now + blockMs);
+    }
+
+    synchronized void notePrimaryFileTurnOutcome(boolean usable) {
+        if (closed || !wanted || usable) return;
+        long now = System.currentTimeMillis();
+        routingOutcomePenalty = RealtimeRoutingPolicy.penaltyAfterBadFile(
+                routingOutcomePenalty);
+        routingBlockedUntilMs = RealtimeRoutingPolicy.shortenBlockAfterBadFile(
+                now, routingBlockedUntilMs);
     }
 
     synchronized void shutdown() {
