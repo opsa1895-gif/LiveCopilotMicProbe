@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 67
-        versionName = "0.66.0-degraded-recovery-state"
+        versionCode = 68
+        versionName = "0.67.0-realtime-route-hysteresis"
     }
 
     compileOptions {
