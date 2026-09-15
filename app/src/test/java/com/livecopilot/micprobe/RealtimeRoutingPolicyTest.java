@@ -129,6 +129,37 @@ public class RealtimeRoutingPolicyTest {
     }
 
     @Test
+    public void routeLatencyEstimateUsesBoundedEwma() {
+        long estimate = RealtimeRoutingPolicy.nextRouteLatencyEstimate(-1L, 0, 2_400L);
+        int samples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(0, 2_400L);
+        assertEquals(2_400L, estimate);
+        assertEquals(1, samples);
+
+        estimate = RealtimeRoutingPolicy.nextRouteLatencyEstimate(estimate, samples, 1_600L);
+        samples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(samples, 1_600L);
+        assertEquals(2_200L, estimate);
+        assertEquals(2, samples);
+        assertEquals(8, RealtimeRoutingPolicy.nextRouteLatencySampleCount(8, 1_000L));
+        assertEquals(2_200L, RealtimeRoutingPolicy.nextRouteLatencyEstimate(
+                estimate, samples, -1L));
+    }
+
+    @Test
+    public void relativeLatencyNeedsEnoughFreshEvidenceAndMeaningfulMargin() {
+        long now = 100_000L;
+        assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                2_500L, 1, 99_000L, 1_700L, 2, 99_000L, now));
+        assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                2_399L, 2, 99_000L, 1_700L, 2, 99_000L, now));
+        assertTrue(RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                2_400L, 2, 99_000L, 1_700L, 2, 99_000L, now));
+        assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                2_400L, 2, 79_999L, 1_700L, 2, 99_000L, now));
+        assertFalse(RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                1_500L, 2, 99_000L, 1_700L, 2, 99_000L, now));
+    }
+
+    @Test
     public void connectedSocketIsRoutableOnlyAfterBlockExpires() {
         assertTrue(RealtimeRoutingPolicy.shouldUseRealtime(true, true, 10_000L, 0L));
         assertFalse(RealtimeRoutingPolicy.shouldUseRealtime(true, true, 10_000L, 12_000L));
