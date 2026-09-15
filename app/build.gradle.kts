@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 81
-        versionName = "0.80.0-adaptive-hysteresis"
+        versionCode = 82
+        versionName = "0.81.0-route-observability"
     }
 
     compileOptions {

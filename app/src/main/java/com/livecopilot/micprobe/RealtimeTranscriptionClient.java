@@ -89,6 +89,7 @@ final class RealtimeTranscriptionClient {
     private int fileRouteLatencyOutlierDirection;
     private int fileRouteLatencyOutlierStreak;
     private String lastRouteDecisionLabel = "file";
+    private String lastRouteDecisionReason = "rt-unavailable";
     private long transportBlockedUntilMs;
     private long outcomeBlockedUntilMs;
     private long latestRecoveryId;
@@ -148,6 +149,7 @@ final class RealtimeTranscriptionClient {
         fileRouteLatencyOutlierDirection = 0;
         fileRouteLatencyOutlierStreak = 0;
         lastRouteDecisionLabel = "file";
+        lastRouteDecisionReason = "rt-unavailable";
         transportBlockedUntilMs = 0L;
         outcomeBlockedUntilMs = 0L;
         clearBackupsLocked();
@@ -171,22 +173,46 @@ final class RealtimeTranscriptionClient {
         long blockedUntilMs = RealtimeRoutingPolicy.effectiveBlockedUntil(
                 transportBlockedUntilMs, outcomeBlockedUntilMs);
         lastRouteDecisionLabel = "file";
+        lastRouteDecisionReason = "rt-unavailable";
         if (!RealtimeRoutingPolicy.shouldUseRealtime(ready, socket != null, now, blockedUntilMs)) {
             if (ready && socket != null && blockedUntilMs > now) {
                 lastRouteDecisionLabel = "file-hyst";
+                lastRouteDecisionReason = "route-blocked";
+            } else if (!ready) {
+                lastRouteDecisionReason = "rt-not-ready";
+            } else if (socket == null) {
+                lastRouteDecisionReason = "rt-no-socket";
             }
             return false;
         }
-        if (turnActive || awaitingCompletion || sourceSampleRate <= 0) return false;
+        if (turnActive) {
+            lastRouteDecisionReason = "rt-busy";
+            return false;
+        }
+        if (awaitingCompletion) {
+            lastRouteDecisionReason = "rt-awaiting";
+            return false;
+        }
+        if (sourceSampleRate <= 0) {
+            lastRouteDecisionReason = "bad-rate";
+            return false;
+        }
+        String latencyReason = RealtimeRoutingPolicy.routeLatencyDecisionReason(
+                realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
+                realtimeRouteLatencySamples, realtimeRouteLatencySampleAtMs,
+                fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now);
         if (RealtimeRoutingPolicy.shouldPreferFileForLatency(
                 realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
                 realtimeRouteLatencySamples, realtimeRouteLatencySampleAtMs,
                 fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
                 fileRouteLatencySamples, fileRouteLatencySampleAtMs, now)) {
             lastRouteDecisionLabel = "file-perf";
+            lastRouteDecisionReason = latencyReason;
             return false;
         }
         lastRouteDecisionLabel = "rt";
+        lastRouteDecisionReason = latencyReason;
         turnActive = true;
         activeTurnSerial = ++serial;
         sentSamples = 0;
@@ -372,6 +398,45 @@ final class RealtimeTranscriptionClient {
 
     synchronized String lastRouteDecisionLabel() {
         return lastRouteDecisionLabel;
+    }
+
+    synchronized String routeDecisionDiagnostics() {
+        long now = System.currentTimeMillis();
+        StringBuilder out = new StringBuilder("route why ").append(lastRouteDecisionReason)
+                .append(" • n ").append(realtimeRouteLatencySamples)
+                .append('/').append(fileRouteLatencySamples);
+        if (realtimeRouteLatencySamples < RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES
+                || fileRouteLatencySamples < RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES) {
+            return out.toString();
+        }
+
+        long riskGapMs = RealtimeRoutingPolicy.routeLatencyRiskGapMs(
+                realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
+                fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs);
+        long requiredMarginMs = RealtimeRoutingPolicy.routeLatencySwitchMarginMs(
+                realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
+                realtimeRouteLatencySampleAtMs, fileRouteLatencyJitterMs,
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now);
+        long guardDurationMs = RealtimeRoutingPolicy.adaptiveRouteLatencySwitchGuardMs(
+                realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
+                fileRouteLatencyJitterMs, fileRouteLatencySamples);
+        long guardRemainingMs = RealtimeRoutingPolicy.routeLatencySwitchGuardRemainingMs(
+                realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
+                realtimeRouteLatencySampleAtMs, fileRouteLatencyJitterMs,
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now);
+        if (riskGapMs != Long.MIN_VALUE) {
+            out.append(" • gap ").append(riskGapMs).append("ms");
+        }
+        if (requiredMarginMs != Long.MAX_VALUE) {
+            out.append(" / need ").append(requiredMarginMs).append("ms");
+        }
+        out.append(" • guard ");
+        if (guardRemainingMs > 0L) {
+            out.append(guardRemainingMs).append('/').append(guardDurationMs).append("ms");
+        } else {
+            out.append("off/").append(guardDurationMs).append("ms");
+        }
+        return out.toString();
     }
 
     synchronized void noteRealtimeTranscriptOutcome(boolean acceptedUseful, boolean fileRecovery,

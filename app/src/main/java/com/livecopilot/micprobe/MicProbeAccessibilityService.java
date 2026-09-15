@@ -880,7 +880,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         overlay.addView(answerText);
 
         debugText = text("", 10, Color.LTGRAY);
-        debugText.setMaxLines(7);
+        debugText.setMaxLines(8);
         debugText.setEllipsize(TextUtils.TruncateAt.END);
         debugText.setPadding(0, dp(6), 0, 0);
         debugText.setVisibility(View.GONE);
@@ -1111,6 +1111,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 + " • rt-file " + acceptedRealtimeRecoveryTranscripts
                 + " • file " + acceptedPrimaryFileTranscripts
                 + " • route " + lastTurnSttRoute;
+        String routeDecision = realtimeTranscriber == null
+                ? "" : "\n" + realtimeTranscriber.routeDecisionDiagnostics();
         String fileConfidence = lastFileCoveragePercent < 0 ? ""
                 : "\nfile cov " + lastFileCoveragePercent + "% ("
                 + Math.max(0, lastFileSubmittedChunks - lastFileFailedChunks) + "/"
@@ -1129,7 +1131,7 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         String echo = lastSelfEchoAtMs > 0L
                 && System.currentTimeMillis() - lastSelfEchoAtMs < 5_000L ? " • echo" : "";
         debugText.setText(app + " • " + mic + rt + echo + heard + partial + latency
-                + sourceStats + fileConfidence + semanticLifecycle);
+                + sourceStats + routeDecision + fileConfidence + semanticLifecycle);
     }
 
     private void resetLatencyMetrics() {
