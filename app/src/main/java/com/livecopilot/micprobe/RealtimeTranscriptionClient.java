@@ -90,6 +90,9 @@ final class RealtimeTranscriptionClient {
     private int fileRouteLatencyOutlierStreak;
     private String lastRouteDecisionLabel = "file";
     private String lastRouteDecisionReason = "rt-unavailable";
+    private int routeFlapScore;
+    private int lastPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+    private long lastPerformanceRouteDecisionAtMs;
     private long transportBlockedUntilMs;
     private long outcomeBlockedUntilMs;
     private long latestRecoveryId;
@@ -150,6 +153,9 @@ final class RealtimeTranscriptionClient {
         fileRouteLatencyOutlierStreak = 0;
         lastRouteDecisionLabel = "file";
         lastRouteDecisionReason = "rt-unavailable";
+        routeFlapScore = 0;
+        lastPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+        lastPerformanceRouteDecisionAtMs = 0L;
         transportBlockedUntilMs = 0L;
         outcomeBlockedUntilMs = 0L;
         clearBackupsLocked();
@@ -197,22 +203,29 @@ final class RealtimeTranscriptionClient {
             lastRouteDecisionReason = "bad-rate";
             return false;
         }
+
+        routeFlapScore = RealtimeRoutingPolicy.activeRouteFlapScore(
+                routeFlapScore, lastPerformanceRouteDecisionAtMs, now);
         String latencyReason = RealtimeRoutingPolicy.routeLatencyDecisionReason(
                 realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
                 realtimeRouteLatencySamples, realtimeRouteLatencySampleAtMs,
                 fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
-                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now);
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now, routeFlapScore);
         if (RealtimeRoutingPolicy.shouldPreferFileForLatency(
                 realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
                 realtimeRouteLatencySamples, realtimeRouteLatencySampleAtMs,
                 fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
-                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now)) {
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now, routeFlapScore)) {
             lastRouteDecisionLabel = "file-perf";
             lastRouteDecisionReason = latencyReason;
+            notePerformanceRouteDecisionLocked(
+                    RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_FILE, latencyReason, now);
             return false;
         }
         lastRouteDecisionLabel = "rt";
         lastRouteDecisionReason = latencyReason;
+        notePerformanceRouteDecisionLocked(
+                RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_REALTIME, latencyReason, now);
         turnActive = true;
         activeTurnSerial = ++serial;
         sentSamples = 0;
@@ -388,23 +401,42 @@ final class RealtimeTranscriptionClient {
     }
 
     synchronized long performanceProbeRemainingMs() {
+        long now = System.currentTimeMillis();
+        int activeFlapScore = RealtimeRoutingPolicy.activeRouteFlapScore(
+                routeFlapScore, lastPerformanceRouteDecisionAtMs, now);
         return RealtimeRoutingPolicy.realtimeProbeRemainingMs(
                 realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
                 realtimeRouteLatencySamples, realtimeRouteLatencySampleAtMs,
                 fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
-                fileRouteLatencySamples, fileRouteLatencySampleAtMs,
-                System.currentTimeMillis());
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now, activeFlapScore);
     }
 
     synchronized String lastRouteDecisionLabel() {
         return lastRouteDecisionLabel;
     }
 
+    private void notePerformanceRouteDecisionLocked(int route, String reason, long nowMs) {
+        if (!RealtimeRoutingPolicy.isTrackableRouteDecisionReason(reason)) return;
+        routeFlapScore = RealtimeRoutingPolicy.nextRouteFlapScore(
+                routeFlapScore, lastPerformanceRoute, lastPerformanceRouteDecisionAtMs,
+                route, nowMs);
+        lastPerformanceRoute = route;
+        lastPerformanceRouteDecisionAtMs = nowMs;
+    }
+
     synchronized String routeDecisionDiagnostics() {
         long now = System.currentTimeMillis();
+        int activeFlapScore = RealtimeRoutingPolicy.activeRouteFlapScore(
+                routeFlapScore, lastPerformanceRouteDecisionAtMs, now);
         StringBuilder out = new StringBuilder("route why ").append(lastRouteDecisionReason)
                 .append(" • n ").append(realtimeRouteLatencySamples)
                 .append('/').append(fileRouteLatencySamples);
+        if (activeFlapScore > 0) {
+            out.append(" • flap×").append(activeFlapScore)
+                    .append(" +").append(
+                            RealtimeRoutingPolicy.routeFlapExtraMarginMs(activeFlapScore))
+                    .append("ms");
+        }
         if (realtimeRouteLatencySamples < RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES
                 || fileRouteLatencySamples < RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES) {
             return out.toString();
@@ -416,7 +448,7 @@ final class RealtimeTranscriptionClient {
         long requiredMarginMs = RealtimeRoutingPolicy.routeLatencySwitchMarginMs(
                 realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
                 realtimeRouteLatencySampleAtMs, fileRouteLatencyJitterMs,
-                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now);
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now, activeFlapScore);
         long guardDurationMs = RealtimeRoutingPolicy.adaptiveRouteLatencySwitchGuardMs(
                 realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
                 fileRouteLatencyJitterMs, fileRouteLatencySamples);
