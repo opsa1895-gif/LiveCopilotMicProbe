@@ -38,3 +38,5 @@ jobs:
 
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
+
+# Temporary branch-only validation; removed before opening the production PR.
