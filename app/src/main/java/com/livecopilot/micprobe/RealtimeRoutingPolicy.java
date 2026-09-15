@@ -17,6 +17,8 @@ final class RealtimeRoutingPolicy {
     static final long ROUTE_LATENCY_FILE_MARGIN_MS = 700L;
     static final long ROUTE_LATENCY_CONFIDENCE_MAX_EXTRA_MARGIN_MS = 1_200L;
     static final long ROUTE_LATENCY_MIN_SAMPLE_EXTRA_MARGIN_MS = 100L;
+    static final long ROUTE_LATENCY_SWITCH_GUARD_MS = 2_000L;
+    static final long ROUTE_LATENCY_SWITCH_EXTRA_MARGIN_MS = 300L;
     static final int ROUTE_LATENCY_FULL_CONFIDENCE_SAMPLES = 4;
     static final long MAX_ROUTE_LATENCY_JITTER_MS = 5_000L;
     static final long MAX_ROUTE_LATENCY_SAMPLE_MS = 12_000L;
@@ -243,6 +245,20 @@ final class RealtimeRoutingPolicy {
         return ROUTE_LATENCY_FILE_MARGIN_MS + jitterExtraMarginMs + sampleExtraMarginMs;
     }
 
+    static long routeLatencySwitchMarginMs(
+            long realtimeJitterMs, int realtimeSamples, long realtimeSampleAtMs,
+            long fileJitterMs, int fileSamples, long fileSampleAtMs, long nowMs) {
+        long baseMarginMs = routeLatencyPreferenceMarginMs(
+                realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
+        if (baseMarginMs == Long.MAX_VALUE) return Long.MAX_VALUE;
+        boolean newerFileEvidence = fileSampleAtMs > realtimeSampleAtMs;
+        boolean recentRealtimeEvidence = realtimeSampleAtMs > 0L
+                && nowMs >= realtimeSampleAtMs
+                && nowMs - realtimeSampleAtMs < ROUTE_LATENCY_SWITCH_GUARD_MS;
+        if (!newerFileEvidence || !recentRealtimeEvidence) return baseMarginMs;
+        return baseMarginMs + ROUTE_LATENCY_SWITCH_EXTRA_MARGIN_MS;
+    }
+
     static boolean hasConfidentFileLatencyAdvantage(
             long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
             long fileEstimateMs, long fileJitterMs, int fileSamples) {
@@ -251,6 +267,20 @@ final class RealtimeRoutingPolicy {
         if (realtimeRiskMs < 0L || fileRiskMs < 0L) return false;
         long requiredMarginMs = routeLatencyPreferenceMarginMs(
                 realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
+        if (requiredMarginMs == Long.MAX_VALUE) return false;
+        return realtimeRiskMs - fileRiskMs >= requiredMarginMs;
+    }
+
+    static boolean hasGuardedFileLatencyAdvantage(
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs) {
+        long realtimeRiskMs = riskAdjustedRouteLatency(realtimeEstimateMs, realtimeJitterMs);
+        long fileRiskMs = riskAdjustedRouteLatency(fileEstimateMs, fileJitterMs);
+        if (realtimeRiskMs < 0L || fileRiskMs < 0L) return false;
+        long requiredMarginMs = routeLatencySwitchMarginMs(
+                realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileJitterMs, fileSamples, fileSampleAtMs, nowMs);
         if (requiredMarginMs == Long.MAX_VALUE) return false;
         return realtimeRiskMs - fileRiskMs >= requiredMarginMs;
     }
@@ -285,9 +315,9 @@ final class RealtimeRoutingPolicy {
                 || fileSamples < MIN_ROUTE_LATENCY_SAMPLES) return 0L;
         if (!isRouteLatencyFresh(fileSampleAtMs, nowMs)
                 || realtimeSampleAtMs <= 0L || nowMs < realtimeSampleAtMs) return 0L;
-        if (!hasConfidentFileLatencyAdvantage(
-                realtimeEstimateMs, realtimeJitterMs, realtimeSamples,
-                fileEstimateMs, fileJitterMs, fileSamples)) return 0L;
+        if (!hasGuardedFileLatencyAdvantage(
+                realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs)) return 0L;
         long intervalMs = adaptiveRealtimeProbeIntervalMs(
                 realtimeEstimateMs, realtimeJitterMs, fileEstimateMs, fileJitterMs);
         if (intervalMs <= 0L) return 0L;
