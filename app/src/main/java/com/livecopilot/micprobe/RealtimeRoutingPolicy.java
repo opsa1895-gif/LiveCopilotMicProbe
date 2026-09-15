@@ -13,9 +13,13 @@ final class RealtimeRoutingPolicy {
     static final long SLOW_REALTIME_LATENCY_MS = 3_000L;
     static final long VERY_SLOW_REALTIME_LATENCY_MS = 5_000L;
     static final long PENALTY_DECAY_STEP_MS = 15_000L;
+    static final long ROUTE_LATENCY_SAMPLE_MAX_AGE_MS = 20_000L;
+    static final long ROUTE_LATENCY_FILE_MARGIN_MS = 700L;
     static final int MAX_OUTCOME_PENALTY = 4;
     static final int MAX_LATENCY_PENALTY = 4;
     static final int GOOD_REALTIME_RESET_STREAK = 2;
+    static final int MIN_ROUTE_LATENCY_SAMPLES = 2;
+    static final int MAX_ROUTE_LATENCY_SAMPLES = 8;
 
     private RealtimeRoutingPolicy() {}
 
@@ -59,6 +63,36 @@ final class RealtimeRoutingPolicy {
 
     static boolean isSlowRealtimeLatency(long latencyMs) {
         return latencyMs > SLOW_REALTIME_LATENCY_MS;
+    }
+
+    static long nextRouteLatencyEstimate(long currentEstimateMs, int currentSamples,
+                                         long sampleMs) {
+        if (sampleMs < 0L) return currentEstimateMs;
+        if (currentEstimateMs < 0L || currentSamples <= 0) return sampleMs;
+        return Math.max(0L, (currentEstimateMs * 3L + sampleMs + 2L) / 4L);
+    }
+
+    static int nextRouteLatencySampleCount(int currentSamples, long sampleMs) {
+        int safe = Math.max(0, Math.min(MAX_ROUTE_LATENCY_SAMPLES, currentSamples));
+        if (sampleMs < 0L) return safe;
+        return Math.min(MAX_ROUTE_LATENCY_SAMPLES, safe + 1);
+    }
+
+    static boolean shouldPreferFileForLatency(
+            long realtimeEstimateMs, int realtimeSamples, long realtimeSampleAtMs,
+            long fileEstimateMs, int fileSamples, long fileSampleAtMs, long nowMs) {
+        if (realtimeEstimateMs < 0L || fileEstimateMs < 0L) return false;
+        if (realtimeSamples < MIN_ROUTE_LATENCY_SAMPLES
+                || fileSamples < MIN_ROUTE_LATENCY_SAMPLES) return false;
+        if (!isRouteLatencyFresh(realtimeSampleAtMs, nowMs)
+                || !isRouteLatencyFresh(fileSampleAtMs, nowMs)) return false;
+        return realtimeEstimateMs - fileEstimateMs >= ROUTE_LATENCY_FILE_MARGIN_MS;
+    }
+
+    private static boolean isRouteLatencyFresh(long sampleAtMs, long nowMs) {
+        return sampleAtMs > 0L
+                && nowMs >= sampleAtMs
+                && nowMs - sampleAtMs <= ROUTE_LATENCY_SAMPLE_MAX_AGE_MS;
     }
 
     static int decayedPenalty(int currentPenalty, long idleMs, int maxPenalty) {
@@ -114,6 +148,11 @@ final class RealtimeRoutingPolicy {
                 && !lastChunkFailed
                 && FileTurnCoveragePolicy.coveragePercent(submittedChunks, failedChunks)
                 >= FileTurnCoveragePolicy.MIN_CONSERVATIVE_COVERAGE_PERCENT;
+    }
+
+    static boolean isFilePerformanceEligible(boolean usable, int degradedTurnStreak,
+                                             long retryCooldownRemainingMs) {
+        return usable && degradedTurnStreak <= 0 && retryCooldownRemainingMs <= 0L;
     }
 
     static boolean shouldUseRealtime(boolean ready, boolean socketPresent,

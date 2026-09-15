@@ -254,11 +254,8 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 ? realtimeTranscriber.noteNewSpeech()
                 : -1L;
         realtimeTurnActive = realtimeTranscriber != null && realtimeTranscriber.beginTurn(sampleRate);
-        long routeBlockMs = realtimeTranscriber == null
-                ? 0L : realtimeTranscriber.routingBlockRemainingMs();
-        lastTurnSttRoute = realtimeTurnActive
-                ? "rt"
-                : (routeBlockMs > 0L ? "file-hyst" : "file");
+        lastTurnSttRoute = realtimeTranscriber == null
+                ? "file" : realtimeTranscriber.lastRouteDecisionLabel();
         // Only turns that actually entered Realtime need a contiguous emergency
         // backup. Pure file-fallback turns keep using the chunk/overlap path.
         realtimeBackupStreaming = realtimeTurnActive;
@@ -573,8 +570,11 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
         lastFileDegradedStreak = Math.max(0, degradedTurnStreak);
         boolean usableFileRoute = RealtimeRoutingPolicy.isUsableFileOutcome(
                 hasText(turnFocus), submittedChunks, failedChunks, lastChunkFailed);
+        boolean filePerformanceEligible = RealtimeRoutingPolicy.isFilePerformanceEligible(
+                usableFileRoute, degradedTurnStreak, retryCooldownRemainingMs);
         if (realtimeTranscriber != null) {
-            realtimeTranscriber.notePrimaryFileTurnOutcome(usableFileRoute);
+            realtimeTranscriber.notePrimaryFileTurnOutcome(
+                    usableFileRoute, filePerformanceEligible, lastFileDrainLatencyMs);
         }
         long safeCooldownMs = Math.max(0L, retryCooldownRemainingMs);
         lastFileRetryCooldownUntilMs = safeCooldownMs > 0L
@@ -1070,12 +1070,20 @@ public class MicProbeAccessibilityService extends AccessibilityService implement
                 ? 0 : realtimeTranscriber.routingLatencyPenalty();
         int goodRealtimeStreak = realtimeTranscriber == null
                 ? 0 : realtimeTranscriber.goodRealtimeStreak();
+        long realtimeRouteEstimateMs = realtimeTranscriber == null
+                ? -1L : realtimeTranscriber.realtimeRouteLatencyEstimateMs();
+        long fileRouteEstimateMs = realtimeTranscriber == null
+                ? -1L : realtimeTranscriber.fileRouteLatencyEstimateMs();
         String rt = " • RT " + realtimeState
                 + (realtimeStateSerial > 0L ? "@" + realtimeStateSerial : "")
                 + (unstableRt > 0 ? " • unstable×" + unstableRt : "")
                 + (routeQualityPenalty > 0 ? " • q×" + routeQualityPenalty : "")
                 + (routeLatencyPenalty > 0 ? " • lat×" + routeLatencyPenalty : "")
                 + (goodRealtimeStreak > 0 ? " • good×" + goodRealtimeStreak : "")
+                + (realtimeRouteEstimateMs >= 0L
+                ? " • rt-est " + latencyLabel(realtimeRouteEstimateMs) : "")
+                + (fileRouteEstimateMs >= 0L
+                ? " • file-est " + latencyLabel(fileRouteEstimateMs) : "")
                 + (routeBlockMs > 0L ? " • route-cd " + latencyLabel(routeBlockMs) : "")
                 + (transportBlockMs > 0L ? " • net-cd " + latencyLabel(transportBlockMs) : "")
                 + (outcomeBlockMs > 0L ? " • quality-cd " + latencyLabel(outcomeBlockMs) : "");

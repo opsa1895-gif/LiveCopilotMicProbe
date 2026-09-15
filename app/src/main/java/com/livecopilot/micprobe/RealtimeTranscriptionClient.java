@@ -76,6 +76,13 @@ final class RealtimeTranscriptionClient {
     private int routingLatencyPenalty;
     private int goodRealtimeStreak;
     private long lastRoutingSignalAtMs;
+    private long realtimeRouteLatencyEstimateMs = -1L;
+    private int realtimeRouteLatencySamples;
+    private long realtimeRouteLatencySampleAtMs;
+    private long fileRouteLatencyEstimateMs = -1L;
+    private int fileRouteLatencySamples;
+    private long fileRouteLatencySampleAtMs;
+    private String lastRouteDecisionLabel = "file";
     private long transportBlockedUntilMs;
     private long outcomeBlockedUntilMs;
     private long latestRecoveryId;
@@ -122,6 +129,13 @@ final class RealtimeTranscriptionClient {
         routingLatencyPenalty = 0;
         goodRealtimeStreak = 0;
         lastRoutingSignalAtMs = 0L;
+        realtimeRouteLatencyEstimateMs = -1L;
+        realtimeRouteLatencySamples = 0;
+        realtimeRouteLatencySampleAtMs = 0L;
+        fileRouteLatencyEstimateMs = -1L;
+        fileRouteLatencySamples = 0;
+        fileRouteLatencySampleAtMs = 0L;
+        lastRouteDecisionLabel = "file";
         transportBlockedUntilMs = 0L;
         outcomeBlockedUntilMs = 0L;
         clearBackupsLocked();
@@ -144,8 +158,22 @@ final class RealtimeTranscriptionClient {
         decayRoutingPenaltiesLocked(now);
         long blockedUntilMs = RealtimeRoutingPolicy.effectiveBlockedUntil(
                 transportBlockedUntilMs, outcomeBlockedUntilMs);
-        if (!RealtimeRoutingPolicy.shouldUseRealtime(ready, socket != null, now, blockedUntilMs)
-                || turnActive || awaitingCompletion || sourceSampleRate <= 0) return false;
+        lastRouteDecisionLabel = "file";
+        if (!RealtimeRoutingPolicy.shouldUseRealtime(ready, socket != null, now, blockedUntilMs)) {
+            if (ready && socket != null && blockedUntilMs > now) {
+                lastRouteDecisionLabel = "file-hyst";
+            }
+            return false;
+        }
+        if (turnActive || awaitingCompletion || sourceSampleRate <= 0) return false;
+        if (RealtimeRoutingPolicy.shouldPreferFileForLatency(
+                realtimeRouteLatencyEstimateMs, realtimeRouteLatencySamples,
+                realtimeRouteLatencySampleAtMs, fileRouteLatencyEstimateMs,
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now)) {
+            lastRouteDecisionLabel = "file-perf";
+            return false;
+        }
+        lastRouteDecisionLabel = "rt";
         turnActive = true;
         activeTurnSerial = ++serial;
         sentSamples = 0;
@@ -300,11 +328,32 @@ final class RealtimeTranscriptionClient {
         return Math.max(0, goodRealtimeStreak);
     }
 
+    synchronized long realtimeRouteLatencyEstimateMs() {
+        return realtimeRouteLatencySamples >= RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES
+                ? realtimeRouteLatencyEstimateMs : -1L;
+    }
+
+    synchronized long fileRouteLatencyEstimateMs() {
+        return fileRouteLatencySamples >= RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES
+                ? fileRouteLatencyEstimateMs : -1L;
+    }
+
+    synchronized String lastRouteDecisionLabel() {
+        return lastRouteDecisionLabel;
+    }
+
     synchronized void noteRealtimeTranscriptOutcome(boolean acceptedUseful, boolean fileRecovery,
                                                      long latencyMs) {
         if (closed || !wanted) return;
         long now = System.currentTimeMillis();
         decayRoutingPenaltiesLocked(now);
+        if (!fileRecovery && latencyMs >= 0L) {
+            realtimeRouteLatencyEstimateMs = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
+                    realtimeRouteLatencyEstimateMs, realtimeRouteLatencySamples, latencyMs);
+            realtimeRouteLatencySamples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(
+                    realtimeRouteLatencySamples, latencyMs);
+            realtimeRouteLatencySampleAtMs = now;
+        }
 
         routingQualityPenalty = RealtimeRoutingPolicy.nextOutcomePenalty(
                 routingQualityPenalty, acceptedUseful, fileRecovery);
@@ -340,11 +389,26 @@ final class RealtimeTranscriptionClient {
         outcomeBlockedUntilMs = Math.max(outcomeBlockedUntilMs, now + blockMs);
     }
 
-    synchronized void notePrimaryFileTurnOutcome(boolean usable) {
+    synchronized void notePrimaryFileTurnOutcome(boolean usable, boolean performanceEligible,
+                                                 long drainLatencyMs) {
         if (closed || !wanted) return;
         goodRealtimeStreak = 0;
-        if (usable) return;
         long now = System.currentTimeMillis();
+        if (performanceEligible && drainLatencyMs >= 0L) {
+            fileRouteLatencyEstimateMs = RealtimeRoutingPolicy.nextRouteLatencyEstimate(
+                    fileRouteLatencyEstimateMs, fileRouteLatencySamples, drainLatencyMs);
+            fileRouteLatencySamples = RealtimeRoutingPolicy.nextRouteLatencySampleCount(
+                    fileRouteLatencySamples, drainLatencyMs);
+            fileRouteLatencySampleAtMs = now;
+        } else if (!performanceEligible) {
+            // A degraded/cooldown file lane cannot keep winning on stale speed history,
+            // even if its transcript coverage was still usable enough for context.
+            fileRouteLatencyEstimateMs = -1L;
+            fileRouteLatencySamples = 0;
+            fileRouteLatencySampleAtMs = 0L;
+        }
+        if (usable) return;
+
         decayRoutingPenaltiesLocked(now);
         routingQualityPenalty = RealtimeRoutingPolicy.penaltyAfterBadFile(
                 routingQualityPenalty);

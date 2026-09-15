@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 71
-        versionName = "0.70.0-routing-health-decay"
+        versionCode = 72
+        versionName = "0.71.0-relative-latency-routing"
     }
 
     compileOptions {
