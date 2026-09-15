@@ -8,25 +8,30 @@ import static org.junit.Assert.assertTrue;
 
 public class RealtimeRoutingConfidencePolicyTest {
     @Test
-    public void stableEvidenceKeepsExistingLatencyMarginNearlyUnchanged() {
-        assertEquals(750L, RealtimeRoutingPolicy.routeLatencyPreferenceMarginMs(
+    public void stableEvidenceKeepsExistingLatencyMarginUnchanged() {
+        assertEquals(700L, RealtimeRoutingPolicy.routeLatencyPreferenceMarginMs(
                 100L, 3, 100L, 3));
         assertEquals(700L, RealtimeRoutingPolicy.routeLatencyPreferenceMarginMs(
                 100L, 4, 100L, 4));
 
         assertTrue(RealtimeRoutingPolicy.hasConfidentFileLatencyAdvantage(
-                2_500L, 100L, 3,
+                2_400L, 100L, 3,
                 1_700L, 100L, 3));
     }
 
     @Test
-    public void minimumSampleConfidenceRejectsBorderlineAdvantage() {
+    public void minimumSampleConfidenceMattersWhenEvidenceIsNoisy() {
+        assertEquals(1_400L, RealtimeRoutingPolicy.routeLatencyPreferenceMarginMs(
+                900L, 3, 900L, 3));
+        assertEquals(1_300L, RealtimeRoutingPolicy.routeLatencyPreferenceMarginMs(
+                900L, 4, 900L, 4));
+
         assertFalse(RealtimeRoutingPolicy.hasConfidentFileLatencyAdvantage(
-                2_420L, 100L, 3,
-                1_700L, 100L, 3));
+                4_000L, 900L, 3,
+                2_700L, 900L, 3));
         assertTrue(RealtimeRoutingPolicy.hasConfidentFileLatencyAdvantage(
-                2_420L, 100L, 4,
-                1_700L, 100L, 4));
+                4_000L, 900L, 4,
+                2_700L, 900L, 4));
     }
 
     @Test
