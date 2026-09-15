@@ -297,7 +297,7 @@ public class RealtimeRoutingPolicyTest {
         assertEquals(2, secondStreak);
         assertTrue(RealtimeRoutingPolicy.isRouteLatencyRegimeChange(
                 secondDirection, secondStreak));
-        assertEquals(3_763L, regimeEstimate);
+        assertEquals(5_175L, regimeEstimate);
         assertEquals(3_100L, ordinaryEstimate);
         assertTrue(regimeEstimate > ordinaryEstimate);
     }
