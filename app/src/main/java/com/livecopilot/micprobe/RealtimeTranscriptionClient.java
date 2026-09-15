@@ -73,7 +73,8 @@ final class RealtimeTranscriptionClient {
     private long readyAtMs;
     private int unstableReadyFailureStreak;
     private int routingOutcomePenalty;
-    private long routingBlockedUntilMs;
+    private long transportBlockedUntilMs;
+    private long outcomeBlockedUntilMs;
     private long latestRecoveryId;
     private int activeBackupSampleRate = 16_000;
     private int pendingBackupSampleRate = 16_000;
@@ -115,7 +116,8 @@ final class RealtimeTranscriptionClient {
         readyAtMs = 0L;
         unstableReadyFailureStreak = 0;
         routingOutcomePenalty = 0;
-        routingBlockedUntilMs = 0L;
+        transportBlockedUntilMs = 0L;
+        outcomeBlockedUntilMs = 0L;
         clearBackupsLocked();
         WebSocket old = socket;
         socket = null;
@@ -133,7 +135,9 @@ final class RealtimeTranscriptionClient {
 
     synchronized boolean beginTurn(int sourceSampleRate) {
         long now = System.currentTimeMillis();
-        if (!RealtimeRoutingPolicy.shouldUseRealtime(ready, socket != null, now, routingBlockedUntilMs)
+        long blockedUntilMs = RealtimeRoutingPolicy.effectiveBlockedUntil(
+                transportBlockedUntilMs, outcomeBlockedUntilMs);
+        if (!RealtimeRoutingPolicy.shouldUseRealtime(ready, socket != null, now, blockedUntilMs)
                 || turnActive || awaitingCompletion || sourceSampleRate <= 0) return false;
         turnActive = true;
         activeTurnSerial = ++serial;
@@ -249,8 +253,20 @@ final class RealtimeTranscriptionClient {
     }
 
     synchronized long routingBlockRemainingMs() {
-        if (routingBlockedUntilMs <= 0L) return 0L;
-        return Math.max(0L, routingBlockedUntilMs - System.currentTimeMillis());
+        long blockedUntilMs = RealtimeRoutingPolicy.effectiveBlockedUntil(
+                transportBlockedUntilMs, outcomeBlockedUntilMs);
+        if (blockedUntilMs <= 0L) return 0L;
+        return Math.max(0L, blockedUntilMs - System.currentTimeMillis());
+    }
+
+    synchronized long transportBlockRemainingMs() {
+        if (transportBlockedUntilMs <= 0L) return 0L;
+        return Math.max(0L, transportBlockedUntilMs - System.currentTimeMillis());
+    }
+
+    synchronized long outcomeBlockRemainingMs() {
+        if (outcomeBlockedUntilMs <= 0L) return 0L;
+        return Math.max(0L, outcomeBlockedUntilMs - System.currentTimeMillis());
     }
 
     synchronized int unstableReadyFailureStreak() {
@@ -265,12 +281,17 @@ final class RealtimeTranscriptionClient {
         if (closed || !wanted) return;
         routingOutcomePenalty = RealtimeRoutingPolicy.nextOutcomePenalty(
                 routingOutcomePenalty, acceptedUseful, fileRecovery);
-        if (acceptedUseful && !fileRecovery) return;
+        long now = System.currentTimeMillis();
+        if (acceptedUseful && !fileRecovery) {
+            if (routingOutcomePenalty <= 0 || outcomeBlockedUntilMs <= now) {
+                outcomeBlockedUntilMs = 0L;
+            }
+            return;
+        }
 
         long blockMs = RealtimeRoutingPolicy.blockMsForOutcomePenalty(routingOutcomePenalty);
         if (blockMs <= 0L) return;
-        long now = System.currentTimeMillis();
-        routingBlockedUntilMs = Math.max(routingBlockedUntilMs, now + blockMs);
+        outcomeBlockedUntilMs = Math.max(outcomeBlockedUntilMs, now + blockMs);
     }
 
     synchronized void notePrimaryFileTurnOutcome(boolean usable) {
@@ -278,8 +299,8 @@ final class RealtimeTranscriptionClient {
         long now = System.currentTimeMillis();
         routingOutcomePenalty = RealtimeRoutingPolicy.penaltyAfterBadFile(
                 routingOutcomePenalty);
-        routingBlockedUntilMs = RealtimeRoutingPolicy.shortenBlockAfterBadFile(
-                now, routingBlockedUntilMs);
+        outcomeBlockedUntilMs = RealtimeRoutingPolicy.shortenOutcomeBlockAfterBadFile(
+                now, outcomeBlockedUntilMs);
     }
 
     synchronized void shutdown() {
@@ -645,11 +666,11 @@ final class RealtimeTranscriptionClient {
             long blockMs = RealtimeRoutingPolicy.blockMsForUnstableStreak(
                     unstableReadyFailureStreak);
             if (blockMs > 0L) {
-                routingBlockedUntilMs = Math.max(routingBlockedUntilMs, now + blockMs);
+                transportBlockedUntilMs = Math.max(transportBlockedUntilMs, now + blockMs);
             }
         } else if (readyAtMs > 0L) {
             unstableReadyFailureStreak = 0;
-            routingBlockedUntilMs = 0L;
+            transportBlockedUntilMs = 0L;
         }
         readyAtMs = 0L;
     }
@@ -658,7 +679,7 @@ final class RealtimeTranscriptionClient {
         if (closed || !wanted || generation != stableGeneration || socket != ws || !ready) return;
         reconnectAttempt = 0;
         unstableReadyFailureStreak = 0;
-        routingBlockedUntilMs = 0L;
+        transportBlockedUntilMs = 0L;
     }
 
     private synchronized void scheduleReconnect() {

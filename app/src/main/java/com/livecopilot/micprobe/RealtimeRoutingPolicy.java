@@ -52,9 +52,14 @@ final class RealtimeRoutingPolicy {
         return Math.max(0, Math.min(MAX_OUTCOME_PENALTY, currentPenalty) - 1);
     }
 
-    static long shortenBlockAfterBadFile(long nowMs, long blockedUntilMs) {
-        if (blockedUntilMs <= nowMs) return blockedUntilMs;
-        return Math.min(blockedUntilMs, nowMs + BAD_FILE_PROBE_MS);
+    static long shortenOutcomeBlockAfterBadFile(long nowMs, long outcomeBlockedUntilMs) {
+        if (outcomeBlockedUntilMs <= nowMs) return outcomeBlockedUntilMs;
+        return Math.min(outcomeBlockedUntilMs, nowMs + BAD_FILE_PROBE_MS);
+    }
+
+    static long effectiveBlockedUntil(long transportBlockedUntilMs, long outcomeBlockedUntilMs) {
+        return Math.max(Math.max(0L, transportBlockedUntilMs),
+                Math.max(0L, outcomeBlockedUntilMs));
     }
 
     static boolean isUsableFileOutcome(boolean hasFocus, int submittedChunks,
