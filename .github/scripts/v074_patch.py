@@ -33,6 +33,11 @@ replace_exact(
     '''    static long nextRouteLatencyJitter(long currentJitterMs, long currentEstimateMs,\n                                       int currentSamples, long sampleMs) {\n        if (sampleMs < 0L) return currentJitterMs;\n        if (currentEstimateMs < 0L || currentSamples <= 0) return 0L;\n        long deviation = Math.abs(sampleMs - currentEstimateMs);\n        if (currentSamples <= 1 || currentJitterMs < 0L) {\n            return Math.min(MAX_ROUTE_LATENCY_JITTER_MS, deviation);\n        }\n        long safeJitter = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_JITTER_MS, currentJitterMs));\n        long next = (safeJitter * 3L + deviation + 2L) / 4L;\n        return Math.min(MAX_ROUTE_LATENCY_JITTER_MS, Math.max(0L, next));\n    }\n''',
     '''    static long nextRouteLatencyJitter(long currentJitterMs, long currentEstimateMs,\n                                       int currentSamples, long sampleMs) {\n        if (sampleMs < 0L) return currentJitterMs;\n        if (currentEstimateMs < 0L || currentSamples <= 0) return 0L;\n        long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, currentEstimateMs));\n        long boundedSampleMs = boundedRouteLatencySample(\n                safeEstimate, currentSamples, sampleMs);\n        long deviation = Math.abs(boundedSampleMs - safeEstimate);\n        if (currentSamples <= 1 || currentJitterMs < 0L) {\n            return Math.min(MAX_ROUTE_LATENCY_JITTER_MS, deviation);\n        }\n        long safeJitter = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_JITTER_MS, currentJitterMs));\n        long next = (safeJitter * 3L + deviation + 2L) / 4L;\n        return Math.min(MAX_ROUTE_LATENCY_JITTER_MS, Math.max(0L, next));\n    }\n''')
 
+replace_exact(
+    'app/src/test/java/com/livecopilot/micprobe/RealtimeRoutingPolicyTest.java',
+    '''        assertEquals(5_000L, RealtimeRoutingPolicy.nextRouteLatencyJitter(\n                5_000L, 1_000L, 3, 20_000L));''',
+    '''        assertEquals(4_500L, RealtimeRoutingPolicy.nextRouteLatencyJitter(\n                5_000L, 1_000L, 3, 20_000L));''')
+
 path = ROOT / 'app/src/test/java/com/livecopilot/micprobe/RealtimeRoutingPolicyTest.java'
 text = path.read_text()
 anchor = '''    @Test\n    public void riskAdjustedLatencyRejectsFastButSpikyFileLane() {\n'''
