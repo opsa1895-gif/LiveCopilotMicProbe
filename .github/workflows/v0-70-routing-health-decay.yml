@@ -40,7 +40,9 @@ jobs:
           gradle-version: '9.6.1'
 
       - name: Apply v0.70 source patch
-        run: python .ci/apply_v070.py
+        run: |
+          sed -i "s/if 'routingOutcomePenalty' in text:/if 'routingOutcomePenalty = ' in text or 'routingOutcomePenalty,' in text:/" .ci/apply_v070.py
+          python .ci/apply_v070.py
 
       - name: Run unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
