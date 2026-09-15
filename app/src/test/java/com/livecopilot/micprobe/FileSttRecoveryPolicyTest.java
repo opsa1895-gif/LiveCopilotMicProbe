@@ -26,6 +26,20 @@ public class FileSttRecoveryPolicyTest {
     }
 
     @Test
+    public void onlyTransientFailuresUseRetryBudget() {
+        assertTrue(FileSttRecoveryPolicy.shouldRetryFailure(
+                new IOException("reset"), 1, true));
+        assertTrue(FileSttRecoveryPolicy.shouldRetryFailure(
+                new IllegalStateException("STT 503"), 1, true));
+        assertFalse(FileSttRecoveryPolicy.shouldRetryFailure(
+                new IllegalStateException("STT 400"), 1, true));
+        assertFalse(FileSttRecoveryPolicy.shouldRetryFailure(
+                new IOException("reset"), 1, false));
+        assertFalse(FileSttRecoveryPolicy.shouldRetryFailure(
+                new IOException("reset"), 2, true));
+    }
+
+    @Test
     public void onlyFullyNetworkDegradedTurnsIncreaseStreak() {
         assertTrue(FileSttRecoveryPolicy.shouldDegradeTurn(2, 0, 1, 1));
         assertFalse(FileSttRecoveryPolicy.shouldDegradeTurn(2, 1, 1, 0));
