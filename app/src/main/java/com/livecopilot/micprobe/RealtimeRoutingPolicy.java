@@ -141,6 +141,9 @@ final class RealtimeRoutingPolicy {
                 currentEstimateMs, currentSamples, sampleMs, outlierDirection, outlierStreak);
         if (currentEstimateMs < 0L || currentSamples <= 0) return boundedSampleMs;
         long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, currentEstimateMs));
+        if (isRouteLatencyRegimeChange(outlierDirection, outlierStreak)) {
+            return routeLatencyRegimeMidpoint(safeEstimate, boundedSampleMs);
+        }
         return Math.max(0L, (safeEstimate * 3L + boundedSampleMs + 2L) / 4L);
     }
 
@@ -169,7 +172,13 @@ final class RealtimeRoutingPolicy {
         long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, currentEstimateMs));
         long boundedSampleMs = regimeAwareRouteLatencySample(
                 safeEstimate, currentSamples, sampleMs, outlierDirection, outlierStreak);
-        long deviation = Math.abs(boundedSampleMs - safeEstimate);
+        long deviation;
+        if (isRouteLatencyRegimeChange(outlierDirection, outlierStreak)) {
+            long rebasedEstimateMs = routeLatencyRegimeMidpoint(safeEstimate, boundedSampleMs);
+            deviation = Math.abs(boundedSampleMs - rebasedEstimateMs);
+        } else {
+            deviation = Math.abs(boundedSampleMs - safeEstimate);
+        }
         if (currentSamples <= 1 || currentJitterMs < 0L) {
             return Math.min(MAX_ROUTE_LATENCY_JITTER_MS, deviation);
         }
@@ -301,6 +310,12 @@ final class RealtimeRoutingPolicy {
         return ready
                 && socketPresent
                 && (blockedUntilMs <= 0L || nowMs >= blockedUntilMs);
+    }
+
+    private static long routeLatencyRegimeMidpoint(long estimateMs, long sampleMs) {
+        long safeEstimate = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, estimateMs));
+        long safeSample = Math.max(0L, Math.min(MAX_ROUTE_LATENCY_SAMPLE_MS, sampleMs));
+        return (safeEstimate + safeSample + 1L) / 2L;
     }
 
     private static int clampPenalty(int value, int max) {
