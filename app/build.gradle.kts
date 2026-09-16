@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 96
-        versionName = "0.95.0-signal-transition-outcomes"
+        versionCode = 97
+        versionName = "0.96.0-transition-cancel-reasons"
     }
 
     compileOptions {
