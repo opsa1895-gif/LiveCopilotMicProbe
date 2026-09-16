@@ -1,6 +1,8 @@
 package com.livecopilot.micprobe;
 
 final class RouteReleaseOutcomeStats {
+    static final int MIN_REVERSAL_RATE_SAMPLES = 3;
+
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
     private static final int REASON_FILE_SPEEDUP = 2;
@@ -26,6 +28,20 @@ final class RouteReleaseOutcomeStats {
         int result = outcomeIndex(outcome);
         if (reason < 0 || result < 0) return 0;
         return counts[reason][result];
+    }
+
+    int reversalRateSampleCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return directionalSampleCount(reason);
+    }
+
+    int reversalRatePercent(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return -1;
+        int samples = directionalSampleCount(reason);
+        if (samples < MIN_REVERSAL_RATE_SAMPLES) return -1;
+        return (int) (((long) counts[reason][OUTCOME_REVERSAL] * 100L) / samples);
     }
 
     void clear() {
@@ -54,14 +70,28 @@ final class RouteReleaseOutcomeStats {
                     .append(counts[reason][OUTCOME_STABLE]).append('/')
                     .append(counts[reason][OUTCOME_REVERSAL]).append('/')
                     .append(counts[reason][OUTCOME_EXPIRED]);
+            int directionalSamples = directionalSampleCount(reason);
+            if (directionalSamples >= MIN_REVERSAL_RATE_SAMPLES) {
+                int reversalRate = (int) (((long) counts[reason][OUTCOME_REVERSAL] * 100L)
+                        / directionalSamples);
+                out.append(" rev").append(reversalRate).append("%@")
+                        .append(directionalSamples);
+            }
         }
         return out.toString();
     }
 
+    private int directionalSampleCount(int reason) {
+        long samples = (long) counts[reason][OUTCOME_STABLE]
+                + counts[reason][OUTCOME_REVERSAL];
+        return (int) Math.min(Integer.MAX_VALUE, samples);
+    }
+
     private int reasonTotal(int reason) {
-        return counts[reason][OUTCOME_STABLE]
+        long total = (long) counts[reason][OUTCOME_STABLE]
                 + counts[reason][OUTCOME_REVERSAL]
                 + counts[reason][OUTCOME_EXPIRED];
+        return (int) Math.min(Integer.MAX_VALUE, total);
     }
 
     private static int reasonIndex(String reason) {
