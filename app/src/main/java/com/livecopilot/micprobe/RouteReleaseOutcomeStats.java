@@ -29,6 +29,8 @@ final class RouteReleaseOutcomeStats {
     private final int[] candidateSignalStreak = new int[REASON_COUNT];
     private final int[] confirmedSignalTransitions = new int[REASON_COUNT];
     private final int[] canceledSignalTransitions = new int[REASON_COUNT];
+    private final int[] revertedSignalTransitions = new int[REASON_COUNT];
+    private final int[] supersededSignalTransitions = new int[REASON_COUNT];
 
     void record(String releaseReason, String outcome) {
         int reason = reasonIndex(releaseReason);
@@ -90,6 +92,18 @@ final class RouteReleaseOutcomeStats {
         return canceledSignalTransitions[reason];
     }
 
+    int revertedSignalTransitionCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return revertedSignalTransitions[reason];
+    }
+
+    int supersededSignalTransitionCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return supersededSignalTransitions[reason];
+    }
+
     void clear() {
         for (int reason = 0; reason < REASON_COUNT; reason++) {
             for (int outcome = 0; outcome < OUTCOME_COUNT; outcome++) {
@@ -103,6 +117,8 @@ final class RouteReleaseOutcomeStats {
             candidateSignalStreak[reason] = 0;
             confirmedSignalTransitions[reason] = 0;
             canceledSignalTransitions[reason] = 0;
+            revertedSignalTransitions[reason] = 0;
+            supersededSignalTransitions[reason] = 0;
             for (int sample = 0; sample < REVERSAL_RATE_WINDOW_SAMPLES; sample++) {
                 recentDirectionalOutcomes[reason][sample] = OUTCOME_STABLE;
             }
@@ -141,6 +157,10 @@ final class RouteReleaseOutcomeStats {
             if (confirmedSignalTransitions[reason] > 0 || canceledSignalTransitions[reason] > 0) {
                 out.append(" tr=").append(confirmedSignalTransitions[reason]).append('/')
                         .append(canceledSignalTransitions[reason]);
+                if (canceledSignalTransitions[reason] > 0) {
+                    out.append(" cancel=").append(revertedSignalTransitions[reason]).append('/')
+                            .append(supersededSignalTransitions[reason]);
+                }
             }
         }
         return out.toString();
@@ -198,7 +218,7 @@ final class RouteReleaseOutcomeStats {
         }
         if (rawLabel.equals(latchedLabel)) {
             if (candidateSignalLabels[reason] != null) {
-                incrementCanceledSignalTransition(reason);
+                incrementRevertedSignalTransition(reason);
             }
             candidateSignalLabels[reason] = null;
             candidateSignalStreak[reason] = 0;
@@ -208,7 +228,7 @@ final class RouteReleaseOutcomeStats {
             candidateSignalStreak[reason]++;
         } else {
             if (candidateSignalLabels[reason] != null) {
-                incrementCanceledSignalTransition(reason);
+                incrementSupersededSignalTransition(reason);
             }
             candidateSignalLabels[reason] = rawLabel;
             candidateSignalStreak[reason] = 1;
@@ -224,6 +244,20 @@ final class RouteReleaseOutcomeStats {
     private void incrementConfirmedSignalTransition(int reason) {
         if (confirmedSignalTransitions[reason] < Integer.MAX_VALUE) {
             confirmedSignalTransitions[reason]++;
+        }
+    }
+
+    private void incrementRevertedSignalTransition(int reason) {
+        incrementCanceledSignalTransition(reason);
+        if (revertedSignalTransitions[reason] < Integer.MAX_VALUE) {
+            revertedSignalTransitions[reason]++;
+        }
+    }
+
+    private void incrementSupersededSignalTransition(int reason) {
+        incrementCanceledSignalTransition(reason);
+        if (supersededSignalTransitions[reason] < Integer.MAX_VALUE) {
+            supersededSignalTransitions[reason]++;
         }
     }
 
