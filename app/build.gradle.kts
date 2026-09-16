@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 93
-        versionName = "0.92.0-reversal-risk-labels"
+        versionCode = 94
+        versionName = "0.93.0-signal-label-hysteresis"
     }
 
     compileOptions {
