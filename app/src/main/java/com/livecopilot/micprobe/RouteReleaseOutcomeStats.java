@@ -5,6 +5,7 @@ final class RouteReleaseOutcomeStats {
     static final int REVERSAL_RATE_WINDOW_SAMPLES = 8;
     static final int STABLE_REVERSAL_RATE_MAX_PERCENT = 25;
     static final int HIGH_REVERSAL_RISK_MIN_PERCENT = 50;
+    static final int SIGNAL_CHANGE_CONFIRM_OUTCOMES = 2;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -23,6 +24,9 @@ final class RouteReleaseOutcomeStats {
     private final int[] recentDirectionalNext = new int[REASON_COUNT];
     private final int[] recentDirectionalSize = new int[REASON_COUNT];
     private final int[] recentDirectionalReversals = new int[REASON_COUNT];
+    private final String[] latchedSignalLabels = new String[REASON_COUNT];
+    private final String[] candidateSignalLabels = new String[REASON_COUNT];
+    private final int[] candidateSignalStreak = new int[REASON_COUNT];
 
     void record(String releaseReason, String outcome) {
         int reason = reasonIndex(releaseReason);
@@ -56,12 +60,7 @@ final class RouteReleaseOutcomeStats {
     String reversalSignalLabel(String releaseReason) {
         int reason = reasonIndex(releaseReason);
         if (reason < 0) return "-";
-        int samples = recentDirectionalSize[reason];
-        if (samples < MIN_REVERSAL_RATE_SAMPLES) return "learn";
-        int reversalRate = reversalRatePercent(reason);
-        if (reversalRate <= STABLE_REVERSAL_RATE_MAX_PERCENT) return "stable";
-        if (reversalRate >= HIGH_REVERSAL_RISK_MIN_PERCENT) return "risk";
-        return "mixed";
+        return reversalSignalLabel(reason);
     }
 
     void clear() {
@@ -72,6 +71,9 @@ final class RouteReleaseOutcomeStats {
             recentDirectionalNext[reason] = 0;
             recentDirectionalSize[reason] = 0;
             recentDirectionalReversals[reason] = 0;
+            latchedSignalLabels[reason] = null;
+            candidateSignalLabels[reason] = null;
+            candidateSignalStreak[reason] = 0;
             for (int sample = 0; sample < REVERSAL_RATE_WINDOW_SAMPLES; sample++) {
                 recentDirectionalOutcomes[reason][sample] = OUTCOME_STABLE;
             }
@@ -113,8 +115,12 @@ final class RouteReleaseOutcomeStats {
     }
 
     private String reversalSignalLabel(int reason) {
-        int samples = recentDirectionalSize[reason];
-        if (samples < MIN_REVERSAL_RATE_SAMPLES) return "learn";
+        if (recentDirectionalSize[reason] < MIN_REVERSAL_RATE_SAMPLES) return "learn";
+        String latched = latchedSignalLabels[reason];
+        return latched != null ? latched : rawReversalSignalLabel(reason);
+    }
+
+    private String rawReversalSignalLabel(int reason) {
         int reversalRate = reversalRatePercent(reason);
         if (reversalRate <= STABLE_REVERSAL_RATE_MAX_PERCENT) return "stable";
         if (reversalRate >= HIGH_REVERSAL_RISK_MIN_PERCENT) return "risk";
@@ -133,6 +139,41 @@ final class RouteReleaseOutcomeStats {
         recentDirectionalOutcomes[reason][next] = outcome;
         if (outcome == OUTCOME_REVERSAL) recentDirectionalReversals[reason]++;
         recentDirectionalNext[reason] = (next + 1) % REVERSAL_RATE_WINDOW_SAMPLES;
+        updateSignalLabel(reason);
+    }
+
+    private void updateSignalLabel(int reason) {
+        if (recentDirectionalSize[reason] < MIN_REVERSAL_RATE_SAMPLES) {
+            latchedSignalLabels[reason] = null;
+            candidateSignalLabels[reason] = null;
+            candidateSignalStreak[reason] = 0;
+            return;
+        }
+
+        String rawLabel = rawReversalSignalLabel(reason);
+        String latchedLabel = latchedSignalLabels[reason];
+        if (latchedLabel == null) {
+            latchedSignalLabels[reason] = rawLabel;
+            candidateSignalLabels[reason] = null;
+            candidateSignalStreak[reason] = 0;
+            return;
+        }
+        if (rawLabel.equals(latchedLabel)) {
+            candidateSignalLabels[reason] = null;
+            candidateSignalStreak[reason] = 0;
+            return;
+        }
+        if (rawLabel.equals(candidateSignalLabels[reason])) {
+            candidateSignalStreak[reason]++;
+        } else {
+            candidateSignalLabels[reason] = rawLabel;
+            candidateSignalStreak[reason] = 1;
+        }
+        if (candidateSignalStreak[reason] >= SIGNAL_CHANGE_CONFIRM_OUTCOMES) {
+            latchedSignalLabels[reason] = rawLabel;
+            candidateSignalLabels[reason] = null;
+            candidateSignalStreak[reason] = 0;
+        }
     }
 
     private int reasonTotal(int reason) {
