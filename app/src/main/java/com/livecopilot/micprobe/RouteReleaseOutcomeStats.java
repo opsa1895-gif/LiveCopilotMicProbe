@@ -27,6 +27,8 @@ final class RouteReleaseOutcomeStats {
     private final String[] latchedSignalLabels = new String[REASON_COUNT];
     private final String[] candidateSignalLabels = new String[REASON_COUNT];
     private final int[] candidateSignalStreak = new int[REASON_COUNT];
+    private final int[] confirmedSignalTransitions = new int[REASON_COUNT];
+    private final int[] canceledSignalTransitions = new int[REASON_COUNT];
 
     void record(String releaseReason, String outcome) {
         int reason = reasonIndex(releaseReason);
@@ -76,6 +78,18 @@ final class RouteReleaseOutcomeStats {
         return candidateSignalStreak[reason];
     }
 
+    int confirmedSignalTransitionCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return confirmedSignalTransitions[reason];
+    }
+
+    int canceledSignalTransitionCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return canceledSignalTransitions[reason];
+    }
+
     void clear() {
         for (int reason = 0; reason < REASON_COUNT; reason++) {
             for (int outcome = 0; outcome < OUTCOME_COUNT; outcome++) {
@@ -87,6 +101,8 @@ final class RouteReleaseOutcomeStats {
             latchedSignalLabels[reason] = null;
             candidateSignalLabels[reason] = null;
             candidateSignalStreak[reason] = 0;
+            confirmedSignalTransitions[reason] = 0;
+            canceledSignalTransitions[reason] = 0;
             for (int sample = 0; sample < REVERSAL_RATE_WINDOW_SAMPLES; sample++) {
                 recentDirectionalOutcomes[reason][sample] = OUTCOME_STABLE;
             }
@@ -121,6 +137,10 @@ final class RouteReleaseOutcomeStats {
                 out.append('>').append(candidateSignalLabels[reason]).append('×')
                         .append(candidateSignalStreak[reason]).append('/')
                         .append(SIGNAL_CHANGE_CONFIRM_OUTCOMES);
+            }
+            if (confirmedSignalTransitions[reason] > 0 || canceledSignalTransitions[reason] > 0) {
+                out.append(" tr=").append(confirmedSignalTransitions[reason]).append('/')
+                        .append(canceledSignalTransitions[reason]);
             }
         }
         return out.toString();
@@ -177,6 +197,9 @@ final class RouteReleaseOutcomeStats {
             return;
         }
         if (rawLabel.equals(latchedLabel)) {
+            if (candidateSignalLabels[reason] != null) {
+                incrementCanceledSignalTransition(reason);
+            }
             candidateSignalLabels[reason] = null;
             candidateSignalStreak[reason] = 0;
             return;
@@ -184,13 +207,29 @@ final class RouteReleaseOutcomeStats {
         if (rawLabel.equals(candidateSignalLabels[reason])) {
             candidateSignalStreak[reason]++;
         } else {
+            if (candidateSignalLabels[reason] != null) {
+                incrementCanceledSignalTransition(reason);
+            }
             candidateSignalLabels[reason] = rawLabel;
             candidateSignalStreak[reason] = 1;
         }
         if (candidateSignalStreak[reason] >= SIGNAL_CHANGE_CONFIRM_OUTCOMES) {
             latchedSignalLabels[reason] = rawLabel;
+            incrementConfirmedSignalTransition(reason);
             candidateSignalLabels[reason] = null;
             candidateSignalStreak[reason] = 0;
+        }
+    }
+
+    private void incrementConfirmedSignalTransition(int reason) {
+        if (confirmedSignalTransitions[reason] < Integer.MAX_VALUE) {
+            confirmedSignalTransitions[reason]++;
+        }
+    }
+
+    private void incrementCanceledSignalTransition(int reason) {
+        if (canceledSignalTransitions[reason] < Integer.MAX_VALUE) {
+            canceledSignalTransitions[reason]++;
         }
     }
 
