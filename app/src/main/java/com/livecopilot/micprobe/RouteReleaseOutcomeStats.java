@@ -49,6 +49,8 @@ final class RouteReleaseOutcomeStats {
     private final int[] candidateTransitionReliabilityStreak = new int[REASON_COUNT];
     private final int[] confirmedTransitionReliabilityChanges = new int[REASON_COUNT];
     private final int[] canceledTransitionReliabilityChanges = new int[REASON_COUNT];
+    private final int[] revertedTransitionReliabilityChanges = new int[REASON_COUNT];
+    private final int[] supersededTransitionReliabilityChanges = new int[REASON_COUNT];
 
     void record(String releaseReason, String outcome) {
         int reason = reasonIndex(releaseReason);
@@ -165,6 +167,26 @@ final class RouteReleaseOutcomeStats {
         return canceledTransitionReliabilityChanges[reason];
     }
 
+    int revertedTransitionReliabilityChangeCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return revertedTransitionReliabilityChanges[reason];
+    }
+
+    int supersededTransitionReliabilityChangeCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return supersededTransitionReliabilityChanges[reason];
+    }
+
+    static String transitionReliabilityCancellationReason(
+            String latchedLabel, String candidateLabel, String rawLabel) {
+        if (latchedLabel == null || candidateLabel == null || rawLabel == null) return "-";
+        if (rawLabel.equals(latchedLabel)) return "reverted";
+        if (!rawLabel.equals(candidateLabel)) return "superseded";
+        return "-";
+    }
+
     void clear() {
         for (int reason = 0; reason < REASON_COUNT; reason++) {
             for (int outcome = 0; outcome < OUTCOME_COUNT; outcome++) {
@@ -188,6 +210,8 @@ final class RouteReleaseOutcomeStats {
             candidateTransitionReliabilityStreak[reason] = 0;
             confirmedTransitionReliabilityChanges[reason] = 0;
             canceledTransitionReliabilityChanges[reason] = 0;
+            revertedTransitionReliabilityChanges[reason] = 0;
+            supersededTransitionReliabilityChanges[reason] = 0;
             for (int sample = 0; sample < REVERSAL_RATE_WINDOW_SAMPLES; sample++) {
                 recentDirectionalOutcomes[reason][sample] = OUTCOME_STABLE;
             }
@@ -248,6 +272,10 @@ final class RouteReleaseOutcomeStats {
                             || canceledTransitionReliabilityChanges[reason] > 0) {
                         out.append(" rtr=").append(confirmedTransitionReliabilityChanges[reason])
                                 .append('/').append(canceledTransitionReliabilityChanges[reason]);
+                        if (canceledTransitionReliabilityChanges[reason] > 0) {
+                            out.append(" rcancel=").append(revertedTransitionReliabilityChanges[reason])
+                                    .append('/').append(supersededTransitionReliabilityChanges[reason]);
+                        }
                     }
                 }
             }
@@ -356,9 +384,11 @@ final class RouteReleaseOutcomeStats {
             candidateTransitionReliabilityStreak[reason] = 0;
             return;
         }
+        String cancellationReason = transitionReliabilityCancellationReason(
+                latchedLabel, candidateTransitionReliabilityLabels[reason], rawLabel);
         if (rawLabel.equals(latchedLabel)) {
-            if (candidateTransitionReliabilityLabels[reason] != null) {
-                incrementCanceledTransitionReliabilityChange(reason);
+            if ("reverted".equals(cancellationReason)) {
+                incrementRevertedTransitionReliabilityChange(reason);
             }
             candidateTransitionReliabilityLabels[reason] = null;
             candidateTransitionReliabilityStreak[reason] = 0;
@@ -367,8 +397,8 @@ final class RouteReleaseOutcomeStats {
         if (rawLabel.equals(candidateTransitionReliabilityLabels[reason])) {
             candidateTransitionReliabilityStreak[reason]++;
         } else {
-            if (candidateTransitionReliabilityLabels[reason] != null) {
-                incrementCanceledTransitionReliabilityChange(reason);
+            if ("superseded".equals(cancellationReason)) {
+                incrementSupersededTransitionReliabilityChange(reason);
             }
             candidateTransitionReliabilityLabels[reason] = rawLabel;
             candidateTransitionReliabilityStreak[reason] = 1;
@@ -387,9 +417,21 @@ final class RouteReleaseOutcomeStats {
         }
     }
 
-    private void incrementCanceledTransitionReliabilityChange(int reason) {
+    private void incrementRevertedTransitionReliabilityChange(int reason) {
         if (canceledTransitionReliabilityChanges[reason] < Integer.MAX_VALUE) {
             canceledTransitionReliabilityChanges[reason]++;
+        }
+        if (revertedTransitionReliabilityChanges[reason] < Integer.MAX_VALUE) {
+            revertedTransitionReliabilityChanges[reason]++;
+        }
+    }
+
+    private void incrementSupersededTransitionReliabilityChange(int reason) {
+        if (canceledTransitionReliabilityChanges[reason] < Integer.MAX_VALUE) {
+            canceledTransitionReliabilityChanges[reason]++;
+        }
+        if (supersededTransitionReliabilityChanges[reason] < Integer.MAX_VALUE) {
+            supersededTransitionReliabilityChanges[reason]++;
         }
     }
 
