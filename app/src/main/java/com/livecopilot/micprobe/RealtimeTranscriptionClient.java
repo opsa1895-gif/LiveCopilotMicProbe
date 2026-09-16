@@ -97,6 +97,12 @@ final class RealtimeTranscriptionClient {
     private long lastPerformanceRouteDecisionAtMs;
     private String lastRouteFlapReleaseReason = "-";
     private long lastRouteFlapReleaseAtMs;
+    private int lastRouteFlapReleaseTarget = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+    private int lastRouteFlapReleaseStableStreak;
+    private String lastRouteFlapReleaseOutcome = "-";
+    private int routeFlapReleaseStableCount;
+    private int routeFlapReleaseReversalCount;
+    private int routeFlapReleaseExpiredCount;
     private long transportBlockedUntilMs;
     private long outcomeBlockedUntilMs;
     private long latestRecoveryId;
@@ -164,6 +170,12 @@ final class RealtimeTranscriptionClient {
         lastPerformanceRouteDecisionAtMs = 0L;
         lastRouteFlapReleaseReason = "-";
         lastRouteFlapReleaseAtMs = 0L;
+        lastRouteFlapReleaseTarget = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+        lastRouteFlapReleaseStableStreak = 0;
+        lastRouteFlapReleaseOutcome = "-";
+        routeFlapReleaseStableCount = 0;
+        routeFlapReleaseReversalCount = 0;
+        routeFlapReleaseExpiredCount = 0;
         transportBlockedUntilMs = 0L;
         outcomeBlockedUntilMs = 0L;
         clearBackupsLocked();
@@ -425,6 +437,7 @@ final class RealtimeTranscriptionClient {
 
     private void notePerformanceRouteDecisionLocked(int route, String reason, long nowMs) {
         if (!RealtimeRoutingPolicy.isTrackableRouteDecisionReason(reason)) return;
+        noteRouteFlapReleaseOutcomeLocked(route, nowMs);
         if (!RealtimeRoutingPolicy.isRouteFlapHistoryFresh(
                 lastPerformanceRouteDecisionAtMs, nowMs)) {
             routeFlapScore = 0;
@@ -451,6 +464,31 @@ final class RealtimeTranscriptionClient {
         }
     }
 
+    private void noteRouteFlapReleaseOutcomeLocked(int route, long nowMs) {
+        if (!"pending".equals(lastRouteFlapReleaseOutcome)) return;
+        String outcome = RealtimeRoutingPolicy.routeFlapReleaseOutcome(
+                lastRouteFlapReleaseTarget, lastRouteFlapReleaseAtMs,
+                lastRouteFlapReleaseStableStreak, route, nowMs);
+        if ("-".equals(outcome)) return;
+        if ("expired".equals(outcome)) {
+            lastRouteFlapReleaseStableStreak = 0;
+            lastRouteFlapReleaseOutcome = outcome;
+            routeFlapReleaseExpiredCount++;
+            return;
+        }
+        if ("reversal".equals(outcome)) {
+            lastRouteFlapReleaseStableStreak = 0;
+            lastRouteFlapReleaseOutcome = outcome;
+            routeFlapReleaseReversalCount++;
+            return;
+        }
+        lastRouteFlapReleaseStableStreak = RealtimeRoutingPolicy.nextRouteFlapReleaseStableStreak(
+                lastRouteFlapReleaseStableStreak, lastRouteFlapReleaseTarget,
+                lastRouteFlapReleaseAtMs, route, nowMs);
+        lastRouteFlapReleaseOutcome = outcome;
+        if ("stable".equals(outcome)) routeFlapReleaseStableCount++;
+    }
+
     private void maybeReleaseRouteFlapHistoryForLatencyRegimeLocked(
             int changedRoute, int outlierDirection, int outlierStreak, long nowMs) {
         int activeFlapScore = RealtimeRoutingPolicy.activeRouteFlapScore(
@@ -464,6 +502,9 @@ final class RealtimeTranscriptionClient {
         if ("-".equals(releaseReason)) return;
         lastRouteFlapReleaseReason = releaseReason;
         lastRouteFlapReleaseAtMs = nowMs;
+        lastRouteFlapReleaseTarget = RealtimeRoutingPolicy.routeFlapReleaseTargetRoute(releaseReason);
+        lastRouteFlapReleaseStableStreak = 0;
+        lastRouteFlapReleaseOutcome = "pending";
         clearRouteFlapHistoryLocked(true);
     }
 
@@ -480,9 +521,21 @@ final class RealtimeTranscriptionClient {
         StringBuilder out = new StringBuilder("route why ").append(lastRouteDecisionReason)
                 .append(" • n ").append(realtimeRouteLatencySamples)
                 .append('/').append(fileRouteLatencySamples);
-        if (!"-".equals(lastRouteFlapReleaseReason)
-                && RealtimeRoutingPolicy.isRouteFlapHistoryFresh(lastRouteFlapReleaseAtMs, now)) {
-            out.append(" • release ").append(lastRouteFlapReleaseReason);
+        boolean releaseFresh = RealtimeRoutingPolicy.isRouteFlapHistoryFresh(
+                lastRouteFlapReleaseAtMs, now);
+        if (!"-".equals(lastRouteFlapReleaseReason) && releaseFresh) {
+            out.append(" • release ").append(lastRouteFlapReleaseReason)
+                    .append(' ').append(lastRouteFlapReleaseOutcome);
+            if ("pending".equals(lastRouteFlapReleaseOutcome)) {
+                out.append('×').append(lastRouteFlapReleaseStableStreak)
+                        .append('/').append(RealtimeRoutingPolicy.ROUTE_FLAP_STABLE_CONFIRM_TURNS);
+            }
+        }
+        if (routeFlapReleaseStableCount > 0 || routeFlapReleaseReversalCount > 0
+                || routeFlapReleaseExpiredCount > 0) {
+            out.append(" • rel s").append(routeFlapReleaseStableCount)
+                    .append("/r").append(routeFlapReleaseReversalCount)
+                    .append("/x").append(routeFlapReleaseExpiredCount);
         }
         boolean routeHistoryFresh = RealtimeRoutingPolicy.isRouteFlapHistoryFresh(
                 lastPerformanceRouteDecisionAtMs, now);
