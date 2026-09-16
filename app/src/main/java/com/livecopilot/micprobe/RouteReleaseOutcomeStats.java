@@ -2,6 +2,7 @@ package com.livecopilot.micprobe;
 
 final class RouteReleaseOutcomeStats {
     static final int MIN_REVERSAL_RATE_SAMPLES = 3;
+    static final int REVERSAL_RATE_WINDOW_SAMPLES = 8;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -15,12 +16,20 @@ final class RouteReleaseOutcomeStats {
     private static final int OUTCOME_COUNT = 3;
 
     private final int[][] counts = new int[REASON_COUNT][OUTCOME_COUNT];
+    private final int[][] recentDirectionalOutcomes =
+            new int[REASON_COUNT][REVERSAL_RATE_WINDOW_SAMPLES];
+    private final int[] recentDirectionalNext = new int[REASON_COUNT];
+    private final int[] recentDirectionalSize = new int[REASON_COUNT];
+    private final int[] recentDirectionalReversals = new int[REASON_COUNT];
 
     void record(String releaseReason, String outcome) {
         int reason = reasonIndex(releaseReason);
         int result = outcomeIndex(outcome);
         if (reason < 0 || result < 0) return;
         if (counts[reason][result] < Integer.MAX_VALUE) counts[reason][result]++;
+        if (result == OUTCOME_STABLE || result == OUTCOME_REVERSAL) {
+            recordRecentDirectionalOutcome(reason, result);
+        }
     }
 
     int count(String releaseReason, String outcome) {
@@ -33,21 +42,27 @@ final class RouteReleaseOutcomeStats {
     int reversalRateSampleCount(String releaseReason) {
         int reason = reasonIndex(releaseReason);
         if (reason < 0) return 0;
-        return directionalSampleCount(reason);
+        return recentDirectionalSize[reason];
     }
 
     int reversalRatePercent(String releaseReason) {
         int reason = reasonIndex(releaseReason);
         if (reason < 0) return -1;
-        int samples = directionalSampleCount(reason);
+        int samples = recentDirectionalSize[reason];
         if (samples < MIN_REVERSAL_RATE_SAMPLES) return -1;
-        return (int) (((long) counts[reason][OUTCOME_REVERSAL] * 100L) / samples);
+        return (int) (((long) recentDirectionalReversals[reason] * 100L) / samples);
     }
 
     void clear() {
         for (int reason = 0; reason < REASON_COUNT; reason++) {
             for (int outcome = 0; outcome < OUTCOME_COUNT; outcome++) {
                 counts[reason][outcome] = 0;
+            }
+            recentDirectionalNext[reason] = 0;
+            recentDirectionalSize[reason] = 0;
+            recentDirectionalReversals[reason] = 0;
+            for (int sample = 0; sample < REVERSAL_RATE_WINDOW_SAMPLES; sample++) {
+                recentDirectionalOutcomes[reason][sample] = OUTCOME_STABLE;
             }
         }
     }
@@ -70,9 +85,9 @@ final class RouteReleaseOutcomeStats {
                     .append(counts[reason][OUTCOME_STABLE]).append('/')
                     .append(counts[reason][OUTCOME_REVERSAL]).append('/')
                     .append(counts[reason][OUTCOME_EXPIRED]);
-            int directionalSamples = directionalSampleCount(reason);
+            int directionalSamples = recentDirectionalSize[reason];
             if (directionalSamples >= MIN_REVERSAL_RATE_SAMPLES) {
-                int reversalRate = (int) (((long) counts[reason][OUTCOME_REVERSAL] * 100L)
+                int reversalRate = (int) (((long) recentDirectionalReversals[reason] * 100L)
                         / directionalSamples);
                 out.append(" rev").append(reversalRate).append("%@")
                         .append(directionalSamples);
@@ -81,10 +96,18 @@ final class RouteReleaseOutcomeStats {
         return out.toString();
     }
 
-    private int directionalSampleCount(int reason) {
-        long samples = (long) counts[reason][OUTCOME_STABLE]
-                + counts[reason][OUTCOME_REVERSAL];
-        return (int) Math.min(Integer.MAX_VALUE, samples);
+    private void recordRecentDirectionalOutcome(int reason, int outcome) {
+        int next = recentDirectionalNext[reason];
+        if (recentDirectionalSize[reason] == REVERSAL_RATE_WINDOW_SAMPLES) {
+            if (recentDirectionalOutcomes[reason][next] == OUTCOME_REVERSAL) {
+                recentDirectionalReversals[reason]--;
+            }
+        } else {
+            recentDirectionalSize[reason]++;
+        }
+        recentDirectionalOutcomes[reason][next] = outcome;
+        if (outcome == OUTCOME_REVERSAL) recentDirectionalReversals[reason]++;
+        recentDirectionalNext[reason] = (next + 1) % REVERSAL_RATE_WINDOW_SAMPLES;
     }
 
     private int reasonTotal(int reason) {
