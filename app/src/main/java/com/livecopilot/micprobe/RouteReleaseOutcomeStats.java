@@ -8,6 +8,8 @@ final class RouteReleaseOutcomeStats {
     static final int SIGNAL_CHANGE_CONFIRM_OUTCOMES = 2;
     static final int MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES = 2;
     static final int TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES = 8;
+    static final int STRONG_TRANSITION_CONFIRMATION_RATE_MIN_PERCENT = 75;
+    static final int WEAK_TRANSITION_CONFIRMATION_RATE_MAX_PERCENT = 25;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -126,6 +128,12 @@ final class RouteReleaseOutcomeStats {
         return transitionConfirmationRatePercent(reason);
     }
 
+    String transitionConfirmationReliabilityLabel(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return "-";
+        return transitionConfirmationReliabilityLabel(reason);
+    }
+
     void clear() {
         for (int reason = 0; reason < REASON_COUNT; reason++) {
             for (int outcome = 0; outcome < OUTCOME_COUNT; outcome++) {
@@ -192,7 +200,8 @@ final class RouteReleaseOutcomeStats {
                 int confirmationSamples = transitionConfirmationRateSampleCount(reason);
                 if (confirmationSamples >= MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES) {
                     out.append(" conf").append(transitionConfirmationRatePercent(reason)).append("%@")
-                            .append(confirmationSamples);
+                            .append(confirmationSamples).append('/')
+                            .append(transitionConfirmationReliabilityLabel(reason));
                 }
             }
         }
@@ -213,6 +222,24 @@ final class RouteReleaseOutcomeStats {
         int samples = recentTransitionResolutionSize[reason];
         if (samples <= 0) return -1;
         return (int) (((long) recentTransitionConfirmations[reason] * 100L) / samples);
+    }
+
+    static String transitionConfirmationReliabilityLabelForRate(
+            int samples, int confirmationRatePercent) {
+        if (samples < MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES) return "learn";
+        if (confirmationRatePercent >= STRONG_TRANSITION_CONFIRMATION_RATE_MIN_PERCENT) {
+            return "strong";
+        }
+        if (confirmationRatePercent <= WEAK_TRANSITION_CONFIRMATION_RATE_MAX_PERCENT) {
+            return "weak";
+        }
+        return "mixed";
+    }
+
+    private String transitionConfirmationReliabilityLabel(int reason) {
+        int samples = transitionConfirmationRateSampleCount(reason);
+        return transitionConfirmationReliabilityLabelForRate(
+                samples, transitionConfirmationRatePercent(reason));
     }
 
     private String reversalSignalLabel(int reason) {
