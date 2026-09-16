@@ -63,7 +63,7 @@ public class RouteReleaseOutcomeStatsTest {
     }
 
     @Test
-    public void expiredOutcomesDoNotDiluteDirectionalReversalRate() {
+    public void expiredOutcomesDoNotEnterRecentDirectionalWindow() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
         stats.record("file-speedup", "stable");
         stats.record("file-speedup", "reversal");
@@ -77,30 +77,67 @@ public class RouteReleaseOutcomeStatsTest {
     }
 
     @Test
+    public void reversalRateUsesOnlyMostRecentEightDirectionalOutcomes() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
+            stats.record("rt-slowdown", "reversal");
+        }
+
+        assertEquals(RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES,
+                stats.reversalRateSampleCount("rt-slowdown"));
+        assertEquals(100, stats.reversalRatePercent("rt-slowdown"));
+
+        for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
+            stats.record("rt-slowdown", "stable");
+        }
+
+        assertEquals(RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES,
+                stats.reversalRateSampleCount("rt-slowdown"));
+        assertEquals(0, stats.reversalRatePercent("rt-slowdown"));
+        assertEquals("rel s/r/x rtslow 8/8/0 rev0%@8", stats.diagnostics());
+    }
+
+    @Test
+    public void slidingWindowDropsOldestDirectionalOutcomeOneAtATime() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
+            stats.record("file-slowdown", "reversal");
+        }
+        stats.record("file-slowdown", "stable");
+
+        assertEquals(RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES,
+                stats.reversalRateSampleCount("file-slowdown"));
+        assertEquals(87, stats.reversalRatePercent("file-slowdown"));
+        assertEquals("rel s/r/x fslow 1/8/0 rev87%@8", stats.diagnostics());
+    }
+
+    @Test
     public void reversalRatesStayIndependentAcrossReleaseReasons() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
-        for (int i = 0; i < 3; i++) stats.record("rt-speedup", "stable");
-        for (int i = 0; i < 3; i++) stats.record("file-slowdown", "reversal");
+        for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
+            stats.record("rt-speedup", "stable");
+            stats.record("file-slowdown", "reversal");
+        }
 
         assertEquals(0, stats.reversalRatePercent("rt-speedup"));
         assertEquals(100, stats.reversalRatePercent("file-slowdown"));
         assertEquals(
-                "rel s/r/x rtfast 3/0/0 rev0%@3 fslow 0/3/0 rev100%@3",
+                "rel s/r/x rtfast 8/0/0 rev0%@8 fslow 0/8/0 rev100%@8",
                 stats.diagnostics());
     }
 
     @Test
-    public void clearResetsAllReasonBucketsAndRates() {
+    public void clearResetsAllReasonBucketsAndRecentWindows() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
-        stats.record("rt-speedup", "stable");
-        stats.record("rt-speedup", "stable");
-        stats.record("rt-speedup", "reversal");
-        stats.record("file-speedup", "reversal");
+        for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
+            stats.record("rt-speedup", "reversal");
+        }
+        stats.record("file-speedup", "expired");
         stats.clear();
 
         assertTrue(stats.isEmpty());
-        assertEquals(0, stats.count("rt-speedup", "stable"));
-        assertEquals(0, stats.count("file-speedup", "reversal"));
+        assertEquals(0, stats.count("rt-speedup", "reversal"));
+        assertEquals(0, stats.count("file-speedup", "expired"));
         assertEquals(0, stats.reversalRateSampleCount("rt-speedup"));
         assertEquals(-1, stats.reversalRatePercent("rt-speedup"));
     }
