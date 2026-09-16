@@ -37,6 +37,8 @@ public class RouteReleaseOutcomeStatsTest {
         assertEquals(0, stats.reversalSignalPendingStreak("unknown"));
         assertEquals(0, stats.confirmedSignalTransitionCount("unknown"));
         assertEquals(0, stats.canceledSignalTransitionCount("unknown"));
+        assertEquals(0, stats.revertedSignalTransitionCount("unknown"));
+        assertEquals(0, stats.supersededSignalTransitionCount("unknown"));
     }
 
     @Test
@@ -118,6 +120,8 @@ public class RouteReleaseOutcomeStatsTest {
         assertEquals(1, stats.reversalSignalPendingStreak("rt-speedup"));
         assertEquals(0, stats.confirmedSignalTransitionCount("rt-speedup"));
         assertEquals(0, stats.canceledSignalTransitionCount("rt-speedup"));
+        assertEquals(0, stats.revertedSignalTransitionCount("rt-speedup"));
+        assertEquals(0, stats.supersededSignalTransitionCount("rt-speedup"));
         assertEquals(
                 "rel s/r/x rtfast 3/2/0 rev40%@5 sig=stable>mixed×1/2",
                 stats.diagnostics());
@@ -140,13 +144,15 @@ public class RouteReleaseOutcomeStatsTest {
         assertEquals(0, stats.reversalSignalPendingStreak("rt-speedup"));
         assertEquals(1, stats.confirmedSignalTransitionCount("rt-speedup"));
         assertEquals(0, stats.canceledSignalTransitionCount("rt-speedup"));
+        assertEquals(0, stats.revertedSignalTransitionCount("rt-speedup"));
+        assertEquals(0, stats.supersededSignalTransitionCount("rt-speedup"));
         assertEquals(
                 "rel s/r/x rtfast 4/2/0 rev33%@6 sig=mixed tr=1/0",
                 stats.diagnostics());
     }
 
     @Test
-    public void returningToLatchedSignalCountsPendingTransitionAsCanceled() {
+    public void returningToLatchedSignalCountsRevertedCancellation() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
         stats.record("file-speedup", "reversal");
         stats.record("file-speedup", "stable");
@@ -161,13 +167,15 @@ public class RouteReleaseOutcomeStatsTest {
         assertEquals("-", stats.reversalSignalPendingLabel("file-speedup"));
         assertEquals(0, stats.confirmedSignalTransitionCount("file-speedup"));
         assertEquals(1, stats.canceledSignalTransitionCount("file-speedup"));
+        assertEquals(1, stats.revertedSignalTransitionCount("file-speedup"));
+        assertEquals(0, stats.supersededSignalTransitionCount("file-speedup"));
         assertEquals(
-                "rel s/r/x ffast 3/2/0 rev40%@5 sig=mixed tr=0/1",
+                "rel s/r/x ffast 3/2/0 rev40%@5 sig=mixed tr=0/1 cancel=1/0",
                 stats.diagnostics());
     }
 
     @Test
-    public void candidateReplacementCancelsOldCandidateBeforeNewOneCanConfirm() {
+    public void candidateReplacementCountsSupersededCancellationBeforeNewCandidateCanConfirm() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
         for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
             stats.record("rt-slowdown", "reversal");
@@ -183,11 +191,15 @@ public class RouteReleaseOutcomeStatsTest {
         stats.record("rt-slowdown", "stable");
         assertEquals("stable", stats.reversalSignalPendingLabel("rt-slowdown"));
         assertEquals(1, stats.canceledSignalTransitionCount("rt-slowdown"));
+        assertEquals(0, stats.revertedSignalTransitionCount("rt-slowdown"));
+        assertEquals(1, stats.supersededSignalTransitionCount("rt-slowdown"));
         assertEquals(0, stats.confirmedSignalTransitionCount("rt-slowdown"));
 
         stats.record("rt-slowdown", "stable");
         assertEquals("stable", stats.reversalSignalLabel("rt-slowdown"));
         assertEquals(1, stats.canceledSignalTransitionCount("rt-slowdown"));
+        assertEquals(0, stats.revertedSignalTransitionCount("rt-slowdown"));
+        assertEquals(1, stats.supersededSignalTransitionCount("rt-slowdown"));
         assertEquals(1, stats.confirmedSignalTransitionCount("rt-slowdown"));
     }
 
@@ -216,6 +228,8 @@ public class RouteReleaseOutcomeStatsTest {
         assertEquals(1, stats.reversalSignalPendingStreak("file-speedup"));
         assertEquals(0, stats.confirmedSignalTransitionCount("file-speedup"));
         assertEquals(0, stats.canceledSignalTransitionCount("file-speedup"));
+        assertEquals(0, stats.revertedSignalTransitionCount("file-speedup"));
+        assertEquals(0, stats.supersededSignalTransitionCount("file-speedup"));
         assertEquals(
                 "rel s/r/x ffast 3/2/2 rev40%@5 sig=stable>mixed×1/2",
                 stats.diagnostics());
@@ -250,8 +264,10 @@ public class RouteReleaseOutcomeStatsTest {
         assertEquals("-", stats.reversalSignalPendingLabel("rt-slowdown"));
         assertEquals(1, stats.confirmedSignalTransitionCount("rt-slowdown"));
         assertEquals(1, stats.canceledSignalTransitionCount("rt-slowdown"));
+        assertEquals(0, stats.revertedSignalTransitionCount("rt-slowdown"));
+        assertEquals(1, stats.supersededSignalTransitionCount("rt-slowdown"));
         assertEquals(
-                "rel s/r/x rtslow 8/8/0 rev0%@8 sig=stable tr=1/1",
+                "rel s/r/x rtslow 8/8/0 rev0%@8 sig=stable tr=1/1 cancel=0/1",
                 stats.diagnostics());
     }
 
@@ -272,7 +288,7 @@ public class RouteReleaseOutcomeStatsTest {
     }
 
     @Test
-    public void recentWindowShowsPendingStableTransitionBeforeHysteresisCommits() {
+    public void recentWindowShowsSupersededCandidateBeforeStableTransitionConfirms() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
         for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
             stats.record("rt-speedup", "reversal");
@@ -287,6 +303,8 @@ public class RouteReleaseOutcomeStatsTest {
         assertEquals("stable", stats.reversalSignalPendingLabel("rt-speedup"));
         assertEquals(1, stats.reversalSignalPendingStreak("rt-speedup"));
         assertEquals(1, stats.canceledSignalTransitionCount("rt-speedup"));
+        assertEquals(0, stats.revertedSignalTransitionCount("rt-speedup"));
+        assertEquals(1, stats.supersededSignalTransitionCount("rt-speedup"));
         assertEquals(0, stats.confirmedSignalTransitionCount("rt-speedup"));
 
         stats.record("rt-speedup", "stable");
@@ -295,12 +313,15 @@ public class RouteReleaseOutcomeStatsTest {
         assertEquals("-", stats.reversalSignalPendingLabel("rt-speedup"));
         assertEquals(0, stats.reversalSignalPendingStreak("rt-speedup"));
         assertEquals(1, stats.canceledSignalTransitionCount("rt-speedup"));
+        assertEquals(0, stats.revertedSignalTransitionCount("rt-speedup"));
+        assertEquals(1, stats.supersededSignalTransitionCount("rt-speedup"));
         assertEquals(1, stats.confirmedSignalTransitionCount("rt-speedup"));
     }
 
     @Test
-    public void transitionOutcomesStayIndependentAcrossReleaseReasons() {
+    public void cancellationReasonsStayIndependentAcrossReleaseReasons() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+
         stats.record("rt-speedup", "stable");
         stats.record("rt-speedup", "stable");
         stats.record("rt-speedup", "stable");
@@ -313,37 +334,51 @@ public class RouteReleaseOutcomeStatsTest {
         stats.record("file-speedup", "stable");
         stats.record("file-speedup", "reversal");
         stats.record("file-speedup", "stable");
+
+        for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
+            stats.record("file-slowdown", "reversal");
+        }
+        for (int i = 0; i < 6; i++) {
+            stats.record("file-slowdown", "stable");
+        }
 
         assertEquals(1, stats.confirmedSignalTransitionCount("rt-speedup"));
         assertEquals(0, stats.canceledSignalTransitionCount("rt-speedup"));
+        assertEquals(0, stats.revertedSignalTransitionCount("rt-speedup"));
+        assertEquals(0, stats.supersededSignalTransitionCount("rt-speedup"));
+
         assertEquals(0, stats.confirmedSignalTransitionCount("file-speedup"));
         assertEquals(1, stats.canceledSignalTransitionCount("file-speedup"));
+        assertEquals(1, stats.revertedSignalTransitionCount("file-speedup"));
+        assertEquals(0, stats.supersededSignalTransitionCount("file-speedup"));
+
         assertEquals(0, stats.confirmedSignalTransitionCount("file-slowdown"));
-        assertEquals(0, stats.canceledSignalTransitionCount("file-slowdown"));
+        assertEquals(1, stats.canceledSignalTransitionCount("file-slowdown"));
+        assertEquals(0, stats.revertedSignalTransitionCount("file-slowdown"));
+        assertEquals(1, stats.supersededSignalTransitionCount("file-slowdown"));
     }
 
     @Test
-    public void clearResetsAllReasonBucketsRecentWindowsAndTransitionOutcomes() {
+    public void clearResetsAllReasonBucketsRecentWindowsAndCancellationReasons() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
-        stats.record("rt-speedup", "stable");
-        stats.record("rt-speedup", "stable");
-        stats.record("rt-speedup", "stable");
-        stats.record("rt-speedup", "reversal");
-        stats.record("rt-speedup", "reversal");
-        stats.record("rt-speedup", "stable");
-        assertEquals(1, stats.confirmedSignalTransitionCount("rt-speedup"));
-        stats.record("file-speedup", "expired");
+        stats.record("file-speedup", "reversal");
+        stats.record("file-speedup", "stable");
+        stats.record("file-speedup", "stable");
+        stats.record("file-speedup", "reversal");
+        stats.record("file-speedup", "stable");
+        assertEquals(1, stats.revertedSignalTransitionCount("file-speedup"));
         stats.clear();
 
         assertTrue(stats.isEmpty());
-        assertEquals(0, stats.count("rt-speedup", "reversal"));
-        assertEquals(0, stats.count("file-speedup", "expired"));
-        assertEquals(0, stats.reversalRateSampleCount("rt-speedup"));
-        assertEquals(-1, stats.reversalRatePercent("rt-speedup"));
-        assertEquals("learn", stats.reversalSignalLabel("rt-speedup"));
-        assertEquals("-", stats.reversalSignalPendingLabel("rt-speedup"));
-        assertEquals(0, stats.reversalSignalPendingStreak("rt-speedup"));
-        assertEquals(0, stats.confirmedSignalTransitionCount("rt-speedup"));
-        assertEquals(0, stats.canceledSignalTransitionCount("rt-speedup"));
+        assertEquals(0, stats.count("file-speedup", "reversal"));
+        assertEquals(0, stats.reversalRateSampleCount("file-speedup"));
+        assertEquals(-1, stats.reversalRatePercent("file-speedup"));
+        assertEquals("learn", stats.reversalSignalLabel("file-speedup"));
+        assertEquals("-", stats.reversalSignalPendingLabel("file-speedup"));
+        assertEquals(0, stats.reversalSignalPendingStreak("file-speedup"));
+        assertEquals(0, stats.confirmedSignalTransitionCount("file-speedup"));
+        assertEquals(0, stats.canceledSignalTransitionCount("file-speedup"));
+        assertEquals(0, stats.revertedSignalTransitionCount("file-speedup"));
+        assertEquals(0, stats.supersededSignalTransitionCount("file-speedup"));
     }
 }
