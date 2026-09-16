@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 92
-        versionName = "0.91.0-recent-reversal-window"
+        versionCode = 93
+        versionName = "0.92.0-reversal-risk-labels"
     }
 
     compileOptions {
