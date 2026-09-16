@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 94
-        versionName = "0.93.0-signal-label-hysteresis"
+        versionCode = 95
+        versionName = "0.94.0-signal-transition-observability"
     }
 
     compileOptions {
