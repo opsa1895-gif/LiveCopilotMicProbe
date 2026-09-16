@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 100
-        versionName = "0.99.0-transition-confirmation-reliability"
+        versionCode = 101
+        versionName = "1.00.0-transition-reliability-hysteresis"
     }
 
     compileOptions {
