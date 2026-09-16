@@ -6,6 +6,7 @@ final class RouteReleaseOutcomeStats {
     static final int STABLE_REVERSAL_RATE_MAX_PERCENT = 25;
     static final int HIGH_REVERSAL_RISK_MIN_PERCENT = 50;
     static final int SIGNAL_CHANGE_CONFIRM_OUTCOMES = 2;
+    static final int MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES = 2;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -174,7 +175,7 @@ final class RouteReleaseOutcomeStats {
                             .append(supersededSignalTransitions[reason]);
                 }
                 int confirmationSamples = transitionConfirmationRateSampleCount(reason);
-                if (confirmationSamples > 0) {
+                if (confirmationSamples >= MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES) {
                     out.append(" conf").append(transitionConfirmationRatePercent(reason)).append("%@")
                             .append(confirmationSamples);
                 }
