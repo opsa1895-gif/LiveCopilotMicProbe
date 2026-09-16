@@ -349,12 +349,20 @@ final class RealtimeRoutingPolicy {
         boolean fileFavoringShift = changedRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
                 ? outlierDirection > 0
                 : changedRoute == ROUTE_PERFORMANCE_ROUTE_FILE && outlierDirection < 0;
-        if (!fileFavoringShift) return false;
+        boolean realtimeFavoringShift = changedRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                ? outlierDirection < 0
+                : changedRoute == ROUTE_PERFORMANCE_ROUTE_FILE && outlierDirection > 0;
+        if (!fileFavoringShift && !realtimeFavoringShift) return false;
         if (!isRouteLatencyFresh(realtimeSampleAtMs, nowMs)
                 || !isRouteLatencyFresh(fileSampleAtMs, nowMs)) return false;
-        return hasConfidentFileLatencyAdvantage(
-                realtimeEstimateMs, realtimeJitterMs, realtimeSamples,
-                fileEstimateMs, fileJitterMs, fileSamples);
+
+        long riskGapMs = routeLatencyRiskGapMs(
+                realtimeEstimateMs, realtimeJitterMs, fileEstimateMs, fileJitterMs);
+        long baselineMarginMs = routeLatencyPreferenceMarginMs(
+                realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
+        if (riskGapMs == Long.MIN_VALUE || baselineMarginMs == Long.MAX_VALUE) return false;
+        if (fileFavoringShift) return riskGapMs >= baselineMarginMs;
+        return riskGapMs < baselineMarginMs;
     }
 
     static boolean isRouteFlapReversal(
