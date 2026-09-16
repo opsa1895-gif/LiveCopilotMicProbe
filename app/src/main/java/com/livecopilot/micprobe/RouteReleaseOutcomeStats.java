@@ -63,6 +63,19 @@ final class RouteReleaseOutcomeStats {
         return reversalSignalLabel(reason);
     }
 
+    String reversalSignalPendingLabel(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return "-";
+        String candidate = candidateSignalLabels[reason];
+        return candidate != null ? candidate : "-";
+    }
+
+    int reversalSignalPendingStreak(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return candidateSignalStreak[reason];
+    }
+
     void clear() {
         for (int reason = 0; reason < REASON_COUNT; reason++) {
             for (int outcome = 0; outcome < OUTCOME_COUNT; outcome++) {
@@ -104,6 +117,11 @@ final class RouteReleaseOutcomeStats {
                         .append(directionalSamples);
             }
             out.append(" sig=").append(reversalSignalLabel(reason));
+            if (candidateSignalLabels[reason] != null && candidateSignalStreak[reason] > 0) {
+                out.append('>').append(candidateSignalLabels[reason]).append('×')
+                        .append(candidateSignalStreak[reason]).append('/')
+                        .append(SIGNAL_CHANGE_CONFIRM_OUTCOMES);
+            }
         }
         return out.toString();
     }
