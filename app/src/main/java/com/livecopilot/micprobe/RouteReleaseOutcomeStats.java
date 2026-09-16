@@ -3,6 +3,8 @@ package com.livecopilot.micprobe;
 final class RouteReleaseOutcomeStats {
     static final int MIN_REVERSAL_RATE_SAMPLES = 3;
     static final int REVERSAL_RATE_WINDOW_SAMPLES = 8;
+    static final int STABLE_REVERSAL_RATE_MAX_PERCENT = 25;
+    static final int HIGH_REVERSAL_RISK_MIN_PERCENT = 50;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -48,9 +50,18 @@ final class RouteReleaseOutcomeStats {
     int reversalRatePercent(String releaseReason) {
         int reason = reasonIndex(releaseReason);
         if (reason < 0) return -1;
+        return reversalRatePercent(reason);
+    }
+
+    String reversalSignalLabel(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return "-";
         int samples = recentDirectionalSize[reason];
-        if (samples < MIN_REVERSAL_RATE_SAMPLES) return -1;
-        return (int) (((long) recentDirectionalReversals[reason] * 100L) / samples);
+        if (samples < MIN_REVERSAL_RATE_SAMPLES) return "learn";
+        int reversalRate = reversalRatePercent(reason);
+        if (reversalRate <= STABLE_REVERSAL_RATE_MAX_PERCENT) return "stable";
+        if (reversalRate >= HIGH_REVERSAL_RISK_MIN_PERCENT) return "risk";
+        return "mixed";
     }
 
     void clear() {
@@ -87,13 +98,27 @@ final class RouteReleaseOutcomeStats {
                     .append(counts[reason][OUTCOME_EXPIRED]);
             int directionalSamples = recentDirectionalSize[reason];
             if (directionalSamples >= MIN_REVERSAL_RATE_SAMPLES) {
-                int reversalRate = (int) (((long) recentDirectionalReversals[reason] * 100L)
-                        / directionalSamples);
-                out.append(" rev").append(reversalRate).append("%@")
+                out.append(" rev").append(reversalRatePercent(reason)).append("%@")
                         .append(directionalSamples);
             }
+            out.append(" sig=").append(reversalSignalLabel(reason));
         }
         return out.toString();
+    }
+
+    private int reversalRatePercent(int reason) {
+        int samples = recentDirectionalSize[reason];
+        if (samples < MIN_REVERSAL_RATE_SAMPLES) return -1;
+        return (int) (((long) recentDirectionalReversals[reason] * 100L) / samples);
+    }
+
+    private String reversalSignalLabel(int reason) {
+        int samples = recentDirectionalSize[reason];
+        if (samples < MIN_REVERSAL_RATE_SAMPLES) return "learn";
+        int reversalRate = reversalRatePercent(reason);
+        if (reversalRate <= STABLE_REVERSAL_RATE_MAX_PERCENT) return "stable";
+        if (reversalRate >= HIGH_REVERSAL_RISK_MIN_PERCENT) return "risk";
+        return "mixed";
     }
 
     private void recordRecentDirectionalOutcome(int reason, int outcome) {
