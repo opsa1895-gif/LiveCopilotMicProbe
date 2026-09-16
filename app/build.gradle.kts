@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 95
-        versionName = "0.94.0-signal-transition-observability"
+        versionCode = 96
+        versionName = "0.95.0-signal-transition-outcomes"
     }
 
     compileOptions {
