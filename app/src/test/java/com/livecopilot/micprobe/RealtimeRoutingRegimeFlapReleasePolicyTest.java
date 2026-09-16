@@ -2,6 +2,7 @@ package com.livecopilot.micprobe;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -128,4 +129,47 @@ public class RealtimeRoutingRegimeFlapReleasePolicyTest {
                 1_500L, -1L, 4, 99_500L,
                 1_700L, 100L, 4, 99_000L, NOW));
     }
+    @Test
+    public void releaseReasonNamesRealtimeAndFileRegimeDirections() {
+        assertEquals("rt-slowdown", RealtimeRoutingPolicy.routeFlapHistoryReleaseReasonForRegimeChange(
+                2, RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_REALTIME,
+                1, RealtimeRoutingPolicy.ROUTE_LATENCY_REGIME_CONFIRM_STREAK,
+                2_600L, 100L, 4, 99_500L,
+                1_600L, 100L, 4, 99_000L, NOW));
+        assertEquals("file-speedup", RealtimeRoutingPolicy.routeFlapHistoryReleaseReasonForRegimeChange(
+                2, RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_FILE,
+                -1, RealtimeRoutingPolicy.ROUTE_LATENCY_REGIME_CONFIRM_STREAK,
+                2_600L, 100L, 4, 99_000L,
+                1_600L, 100L, 4, 99_500L, NOW));
+        assertEquals("rt-speedup", RealtimeRoutingPolicy.routeFlapHistoryReleaseReasonForRegimeChange(
+                2, RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_REALTIME,
+                -1, RealtimeRoutingPolicy.ROUTE_LATENCY_REGIME_CONFIRM_STREAK,
+                1_500L, 100L, 4, 99_500L,
+                1_700L, 100L, 4, 99_000L, NOW));
+        assertEquals("file-slowdown", RealtimeRoutingPolicy.routeFlapHistoryReleaseReasonForRegimeChange(
+                2, RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_FILE,
+                1, RealtimeRoutingPolicy.ROUTE_LATENCY_REGIME_CONFIRM_STREAK,
+                1_800L, 100L, 4, 99_000L,
+                2_300L, 100L, 4, 99_500L, NOW));
+    }
+
+    @Test
+    public void releaseReasonIsHiddenWhenRegimeShiftDoesNotQualify() {
+        assertEquals("-", RealtimeRoutingPolicy.routeFlapHistoryReleaseReasonForRegimeChange(
+                2, RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_REALTIME,
+                1, RealtimeRoutingPolicy.ROUTE_LATENCY_REGIME_CONFIRM_STREAK,
+                2_000L, 100L, 4, 99_500L,
+                1_500L, 100L, 4, 99_000L, NOW));
+        assertEquals("-", RealtimeRoutingPolicy.routeFlapHistoryReleaseReasonForRegimeChange(
+                2, RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_REALTIME,
+                -1, RealtimeRoutingPolicy.ROUTE_LATENCY_REGIME_CONFIRM_STREAK,
+                2_100L, 100L, 4, 99_500L,
+                1_200L, 100L, 4, 99_000L, NOW));
+        assertEquals("-", RealtimeRoutingPolicy.routeFlapHistoryReleaseReasonForRegimeChange(
+                2, RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_FILE,
+                -1, 1,
+                2_600L, 100L, 4, 99_000L,
+                1_600L, 100L, 4, 99_500L, NOW));
+    }
+
 }

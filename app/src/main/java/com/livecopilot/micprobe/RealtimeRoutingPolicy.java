@@ -339,30 +339,54 @@ final class RealtimeRoutingPolicy {
         return stableRouteStreak >= ROUTE_FLAP_STABLE_CONFIRM_TURNS;
     }
 
-    static boolean shouldReleaseRouteFlapHistoryForRegimeChange(
+    static String routeFlapHistoryReleaseReasonForRegimeChange(
             int routeFlapScore, int changedRoute, int outlierDirection, int outlierStreak,
             long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
             long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
             int fileSamples, long fileSampleAtMs, long nowMs) {
         if (routeFlapScore <= 0
-                || !isRouteLatencyRegimeChange(outlierDirection, outlierStreak)) return false;
-        boolean fileFavoringShift = changedRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
-                ? outlierDirection > 0
-                : changedRoute == ROUTE_PERFORMANCE_ROUTE_FILE && outlierDirection < 0;
-        boolean realtimeFavoringShift = changedRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
-                ? outlierDirection < 0
-                : changedRoute == ROUTE_PERFORMANCE_ROUTE_FILE && outlierDirection > 0;
-        if (!fileFavoringShift && !realtimeFavoringShift) return false;
+                || !isRouteLatencyRegimeChange(outlierDirection, outlierStreak)) return "-";
+
+        String reason;
+        boolean fileFavoringShift;
+        if (changedRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME && outlierDirection > 0) {
+            reason = "rt-slowdown";
+            fileFavoringShift = true;
+        } else if (changedRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME && outlierDirection < 0) {
+            reason = "rt-speedup";
+            fileFavoringShift = false;
+        } else if (changedRoute == ROUTE_PERFORMANCE_ROUTE_FILE && outlierDirection < 0) {
+            reason = "file-speedup";
+            fileFavoringShift = true;
+        } else if (changedRoute == ROUTE_PERFORMANCE_ROUTE_FILE && outlierDirection > 0) {
+            reason = "file-slowdown";
+            fileFavoringShift = false;
+        } else {
+            return "-";
+        }
         if (!isRouteLatencyFresh(realtimeSampleAtMs, nowMs)
-                || !isRouteLatencyFresh(fileSampleAtMs, nowMs)) return false;
+                || !isRouteLatencyFresh(fileSampleAtMs, nowMs)) return "-";
 
         long riskGapMs = routeLatencyRiskGapMs(
                 realtimeEstimateMs, realtimeJitterMs, fileEstimateMs, fileJitterMs);
         long baselineMarginMs = routeLatencyPreferenceMarginMs(
                 realtimeJitterMs, realtimeSamples, fileJitterMs, fileSamples);
-        if (riskGapMs == Long.MIN_VALUE || baselineMarginMs == Long.MAX_VALUE) return false;
-        if (fileFavoringShift) return riskGapMs >= baselineMarginMs;
-        return riskGapMs < baselineMarginMs;
+        if (riskGapMs == Long.MIN_VALUE || baselineMarginMs == Long.MAX_VALUE) return "-";
+        boolean qualifies = fileFavoringShift
+                ? riskGapMs >= baselineMarginMs
+                : riskGapMs < baselineMarginMs;
+        return qualifies ? reason : "-";
+    }
+
+    static boolean shouldReleaseRouteFlapHistoryForRegimeChange(
+            int routeFlapScore, int changedRoute, int outlierDirection, int outlierStreak,
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs) {
+        return !"-".equals(routeFlapHistoryReleaseReasonForRegimeChange(
+                routeFlapScore, changedRoute, outlierDirection, outlierStreak,
+                realtimeEstimateMs, realtimeJitterMs, realtimeSamples, realtimeSampleAtMs,
+                fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs));
     }
 
     static boolean isRouteFlapReversal(
