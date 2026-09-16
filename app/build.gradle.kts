@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 88
-        versionName = "0.87.0-regime-release-observability"
+        versionCode = 89
+        versionName = "0.88.0-regime-release-outcomes"
     }
 
     compileOptions {

@@ -389,6 +389,44 @@ final class RealtimeRoutingPolicy {
                 fileEstimateMs, fileJitterMs, fileSamples, fileSampleAtMs, nowMs));
     }
 
+    static int routeFlapReleaseTargetRoute(String releaseReason) {
+        if ("rt-slowdown".equals(releaseReason) || "file-speedup".equals(releaseReason)) {
+            return ROUTE_PERFORMANCE_ROUTE_FILE;
+        }
+        if ("rt-speedup".equals(releaseReason) || "file-slowdown".equals(releaseReason)) {
+            return ROUTE_PERFORMANCE_ROUTE_REALTIME;
+        }
+        return ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+    }
+
+    static int nextRouteFlapReleaseStableStreak(
+            int currentStreak, int targetRoute, long releaseAtMs,
+            int nextRoute, long nowMs) {
+        boolean targetKnown = targetRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || targetRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        boolean nextKnown = nextRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || nextRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        if (!targetKnown || !nextKnown || !isRouteFlapHistoryFresh(releaseAtMs, nowMs)
+                || nextRoute != targetRoute) return 0;
+        int safe = Math.max(0, Math.min(ROUTE_FLAP_STABLE_CONFIRM_TURNS, currentStreak));
+        return Math.min(ROUTE_FLAP_STABLE_CONFIRM_TURNS, safe + 1);
+    }
+
+    static String routeFlapReleaseOutcome(
+            int targetRoute, long releaseAtMs, int currentStableStreak,
+            int nextRoute, long nowMs) {
+        boolean targetKnown = targetRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || targetRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        boolean nextKnown = nextRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || nextRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        if (!targetKnown || !nextKnown) return "-";
+        if (!isRouteFlapHistoryFresh(releaseAtMs, nowMs)) return "expired";
+        if (nextRoute != targetRoute) return "reversal";
+        int nextStableStreak = nextRouteFlapReleaseStableStreak(
+                currentStableStreak, targetRoute, releaseAtMs, nextRoute, nowMs);
+        return nextStableStreak >= ROUTE_FLAP_STABLE_CONFIRM_TURNS ? "stable" : "pending";
+    }
+
     static boolean isRouteFlapReversal(
             int previousDistinctRoute, int currentRoute, int nextRoute) {
         boolean previousKnown = previousDistinctRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
