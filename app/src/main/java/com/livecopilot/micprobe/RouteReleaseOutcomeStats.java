@@ -7,6 +7,7 @@ final class RouteReleaseOutcomeStats {
     static final int HIGH_REVERSAL_RISK_MIN_PERCENT = 50;
     static final int SIGNAL_CHANGE_CONFIRM_OUTCOMES = 2;
     static final int MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES = 2;
+    static final int TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES = 8;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -18,6 +19,9 @@ final class RouteReleaseOutcomeStats {
     private static final int OUTCOME_REVERSAL = 1;
     private static final int OUTCOME_EXPIRED = 2;
     private static final int OUTCOME_COUNT = 3;
+
+    private static final int TRANSITION_REVERTED = 0;
+    private static final int TRANSITION_CONFIRMED = 1;
 
     private final int[][] counts = new int[REASON_COUNT][OUTCOME_COUNT];
     private final int[][] recentDirectionalOutcomes =
@@ -32,6 +36,11 @@ final class RouteReleaseOutcomeStats {
     private final int[] canceledSignalTransitions = new int[REASON_COUNT];
     private final int[] revertedSignalTransitions = new int[REASON_COUNT];
     private final int[] supersededSignalTransitions = new int[REASON_COUNT];
+    private final int[][] recentTransitionResolutions =
+            new int[REASON_COUNT][TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES];
+    private final int[] recentTransitionResolutionNext = new int[REASON_COUNT];
+    private final int[] recentTransitionResolutionSize = new int[REASON_COUNT];
+    private final int[] recentTransitionConfirmations = new int[REASON_COUNT];
 
     void record(String releaseReason, String outcome) {
         int reason = reasonIndex(releaseReason);
@@ -132,8 +141,14 @@ final class RouteReleaseOutcomeStats {
             canceledSignalTransitions[reason] = 0;
             revertedSignalTransitions[reason] = 0;
             supersededSignalTransitions[reason] = 0;
+            recentTransitionResolutionNext[reason] = 0;
+            recentTransitionResolutionSize[reason] = 0;
+            recentTransitionConfirmations[reason] = 0;
             for (int sample = 0; sample < REVERSAL_RATE_WINDOW_SAMPLES; sample++) {
                 recentDirectionalOutcomes[reason][sample] = OUTCOME_STABLE;
+            }
+            for (int sample = 0; sample < TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES; sample++) {
+                recentTransitionResolutions[reason][sample] = TRANSITION_REVERTED;
             }
         }
     }
@@ -191,14 +206,13 @@ final class RouteReleaseOutcomeStats {
     }
 
     private int transitionConfirmationRateSampleCount(int reason) {
-        long samples = (long) confirmedSignalTransitions[reason] + revertedSignalTransitions[reason];
-        return (int) Math.min(Integer.MAX_VALUE, samples);
+        return recentTransitionResolutionSize[reason];
     }
 
     private int transitionConfirmationRatePercent(int reason) {
-        long samples = (long) confirmedSignalTransitions[reason] + revertedSignalTransitions[reason];
-        if (samples <= 0L) return -1;
-        return (int) (((long) confirmedSignalTransitions[reason] * 100L) / samples);
+        int samples = recentTransitionResolutionSize[reason];
+        if (samples <= 0) return -1;
+        return (int) (((long) recentTransitionConfirmations[reason] * 100L) / samples);
     }
 
     private String reversalSignalLabel(int reason) {
@@ -227,6 +241,21 @@ final class RouteReleaseOutcomeStats {
         if (outcome == OUTCOME_REVERSAL) recentDirectionalReversals[reason]++;
         recentDirectionalNext[reason] = (next + 1) % REVERSAL_RATE_WINDOW_SAMPLES;
         updateSignalLabel(reason);
+    }
+
+    private void recordRecentTransitionResolution(int reason, int resolution) {
+        int next = recentTransitionResolutionNext[reason];
+        if (recentTransitionResolutionSize[reason] == TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES) {
+            if (recentTransitionResolutions[reason][next] == TRANSITION_CONFIRMED) {
+                recentTransitionConfirmations[reason]--;
+            }
+        } else {
+            recentTransitionResolutionSize[reason]++;
+        }
+        recentTransitionResolutions[reason][next] = resolution;
+        if (resolution == TRANSITION_CONFIRMED) recentTransitionConfirmations[reason]++;
+        recentTransitionResolutionNext[reason] =
+                (next + 1) % TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES;
     }
 
     private void updateSignalLabel(int reason) {
@@ -274,6 +303,7 @@ final class RouteReleaseOutcomeStats {
         if (confirmedSignalTransitions[reason] < Integer.MAX_VALUE) {
             confirmedSignalTransitions[reason]++;
         }
+        recordRecentTransitionResolution(reason, TRANSITION_CONFIRMED);
     }
 
     private void incrementRevertedSignalTransition(int reason) {
@@ -281,6 +311,7 @@ final class RouteReleaseOutcomeStats {
         if (revertedSignalTransitions[reason] < Integer.MAX_VALUE) {
             revertedSignalTransitions[reason]++;
         }
+        recordRecentTransitionResolution(reason, TRANSITION_REVERTED);
     }
 
     private void incrementSupersededSignalTransition(int reason) {
