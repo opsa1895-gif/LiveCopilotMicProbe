@@ -95,6 +95,8 @@ final class RealtimeTranscriptionClient {
     private int previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
     private int lastPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
     private long lastPerformanceRouteDecisionAtMs;
+    private String lastRouteFlapReleaseReason = "-";
+    private long lastRouteFlapReleaseAtMs;
     private long transportBlockedUntilMs;
     private long outcomeBlockedUntilMs;
     private long latestRecoveryId;
@@ -160,6 +162,8 @@ final class RealtimeTranscriptionClient {
         previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
         lastPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
         lastPerformanceRouteDecisionAtMs = 0L;
+        lastRouteFlapReleaseReason = "-";
+        lastRouteFlapReleaseAtMs = 0L;
         transportBlockedUntilMs = 0L;
         outcomeBlockedUntilMs = 0L;
         clearBackupsLocked();
@@ -451,12 +455,15 @@ final class RealtimeTranscriptionClient {
             int changedRoute, int outlierDirection, int outlierStreak, long nowMs) {
         int activeFlapScore = RealtimeRoutingPolicy.activeRouteFlapScore(
                 routeFlapScore, lastPerformanceRouteDecisionAtMs, nowMs);
-        if (!RealtimeRoutingPolicy.shouldReleaseRouteFlapHistoryForRegimeChange(
+        String releaseReason = RealtimeRoutingPolicy.routeFlapHistoryReleaseReasonForRegimeChange(
                 activeFlapScore, changedRoute, outlierDirection, outlierStreak,
                 realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
                 realtimeRouteLatencySamples, realtimeRouteLatencySampleAtMs,
                 fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
-                fileRouteLatencySamples, fileRouteLatencySampleAtMs, nowMs)) return;
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, nowMs);
+        if ("-".equals(releaseReason)) return;
+        lastRouteFlapReleaseReason = releaseReason;
+        lastRouteFlapReleaseAtMs = nowMs;
         clearRouteFlapHistoryLocked(true);
     }
 
@@ -473,6 +480,10 @@ final class RealtimeTranscriptionClient {
         StringBuilder out = new StringBuilder("route why ").append(lastRouteDecisionReason)
                 .append(" • n ").append(realtimeRouteLatencySamples)
                 .append('/').append(fileRouteLatencySamples);
+        if (!"-".equals(lastRouteFlapReleaseReason)
+                && RealtimeRoutingPolicy.isRouteFlapHistoryFresh(lastRouteFlapReleaseAtMs, now)) {
+            out.append(" • release ").append(lastRouteFlapReleaseReason);
+        }
         boolean routeHistoryFresh = RealtimeRoutingPolicy.isRouteFlapHistoryFresh(
                 lastPerformanceRouteDecisionAtMs, now);
         String routeHistory = routeHistoryFresh
