@@ -41,8 +41,8 @@ text = replace_once(
 )
 text = replace_once(
     text,
-    '''            latchedTransitionReliabilityLabels[reason] = null;\n            candidateTransitionReliabilityLabels[reason] = null;\n            candidateTransitionReliabilityStreak[reason] = 0;\n''',
-    '''            latchedTransitionReliabilityLabels[reason] = null;\n            candidateTransitionReliabilityLabels[reason] = null;\n            candidateTransitionReliabilityStreak[reason] = 0;\n            confirmedTransitionReliabilityChanges[reason] = 0;\n            canceledTransitionReliabilityChanges[reason] = 0;\n''',
+    '''            recentTransitionConfirmations[reason] = 0;\n            latchedTransitionReliabilityLabels[reason] = null;\n            candidateTransitionReliabilityLabels[reason] = null;\n            candidateTransitionReliabilityStreak[reason] = 0;\n''',
+    '''            recentTransitionConfirmations[reason] = 0;\n            latchedTransitionReliabilityLabels[reason] = null;\n            candidateTransitionReliabilityLabels[reason] = null;\n            candidateTransitionReliabilityStreak[reason] = 0;\n            confirmedTransitionReliabilityChanges[reason] = 0;\n            canceledTransitionReliabilityChanges[reason] = 0;\n''',
     'clear reliability transition counters',
 )
 text = replace_once(
