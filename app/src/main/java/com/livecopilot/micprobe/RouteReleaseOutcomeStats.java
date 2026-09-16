@@ -47,6 +47,8 @@ final class RouteReleaseOutcomeStats {
     private final String[] latchedTransitionReliabilityLabels = new String[REASON_COUNT];
     private final String[] candidateTransitionReliabilityLabels = new String[REASON_COUNT];
     private final int[] candidateTransitionReliabilityStreak = new int[REASON_COUNT];
+    private final int[] confirmedTransitionReliabilityChanges = new int[REASON_COUNT];
+    private final int[] canceledTransitionReliabilityChanges = new int[REASON_COUNT];
 
     void record(String releaseReason, String outcome) {
         int reason = reasonIndex(releaseReason);
@@ -151,6 +153,18 @@ final class RouteReleaseOutcomeStats {
         return candidateTransitionReliabilityStreak[reason];
     }
 
+    int confirmedTransitionReliabilityChangeCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return confirmedTransitionReliabilityChanges[reason];
+    }
+
+    int canceledTransitionReliabilityChangeCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return canceledTransitionReliabilityChanges[reason];
+    }
+
     void clear() {
         for (int reason = 0; reason < REASON_COUNT; reason++) {
             for (int outcome = 0; outcome < OUTCOME_COUNT; outcome++) {
@@ -172,6 +186,8 @@ final class RouteReleaseOutcomeStats {
             latchedTransitionReliabilityLabels[reason] = null;
             candidateTransitionReliabilityLabels[reason] = null;
             candidateTransitionReliabilityStreak[reason] = 0;
+            confirmedTransitionReliabilityChanges[reason] = 0;
+            canceledTransitionReliabilityChanges[reason] = 0;
             for (int sample = 0; sample < REVERSAL_RATE_WINDOW_SAMPLES; sample++) {
                 recentDirectionalOutcomes[reason][sample] = OUTCOME_STABLE;
             }
@@ -227,6 +243,11 @@ final class RouteReleaseOutcomeStats {
                         out.append('>').append(candidateTransitionReliabilityLabels[reason]).append('×')
                                 .append(candidateTransitionReliabilityStreak[reason]).append('/')
                                 .append(RELIABILITY_CHANGE_CONFIRM_RESOLUTIONS);
+                    }
+                    if (confirmedTransitionReliabilityChanges[reason] > 0
+                            || canceledTransitionReliabilityChanges[reason] > 0) {
+                        out.append(" rtr=").append(confirmedTransitionReliabilityChanges[reason])
+                                .append('/').append(canceledTransitionReliabilityChanges[reason]);
                     }
                 }
             }
@@ -336,6 +357,9 @@ final class RouteReleaseOutcomeStats {
             return;
         }
         if (rawLabel.equals(latchedLabel)) {
+            if (candidateTransitionReliabilityLabels[reason] != null) {
+                incrementCanceledTransitionReliabilityChange(reason);
+            }
             candidateTransitionReliabilityLabels[reason] = null;
             candidateTransitionReliabilityStreak[reason] = 0;
             return;
@@ -343,13 +367,29 @@ final class RouteReleaseOutcomeStats {
         if (rawLabel.equals(candidateTransitionReliabilityLabels[reason])) {
             candidateTransitionReliabilityStreak[reason]++;
         } else {
+            if (candidateTransitionReliabilityLabels[reason] != null) {
+                incrementCanceledTransitionReliabilityChange(reason);
+            }
             candidateTransitionReliabilityLabels[reason] = rawLabel;
             candidateTransitionReliabilityStreak[reason] = 1;
         }
         if (candidateTransitionReliabilityStreak[reason] >= RELIABILITY_CHANGE_CONFIRM_RESOLUTIONS) {
             latchedTransitionReliabilityLabels[reason] = rawLabel;
+            incrementConfirmedTransitionReliabilityChange(reason);
             candidateTransitionReliabilityLabels[reason] = null;
             candidateTransitionReliabilityStreak[reason] = 0;
+        }
+    }
+
+    private void incrementConfirmedTransitionReliabilityChange(int reason) {
+        if (confirmedTransitionReliabilityChanges[reason] < Integer.MAX_VALUE) {
+            confirmedTransitionReliabilityChanges[reason]++;
+        }
+    }
+
+    private void incrementCanceledTransitionReliabilityChange(int reason) {
+        if (canceledTransitionReliabilityChanges[reason] < Integer.MAX_VALUE) {
+            canceledTransitionReliabilityChanges[reason]++;
         }
     }
 
