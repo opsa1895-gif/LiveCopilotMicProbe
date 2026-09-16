@@ -32,6 +32,7 @@ final class RealtimeRoutingPolicy {
     static final long ROUTE_FLAP_MARGIN_STEP_MS = 200L;
     static final long ROUTE_FLAP_MAX_EXTRA_MARGIN_MS = 600L;
     static final int ROUTE_FLAP_MAX_SCORE = 3;
+    static final int ROUTE_FLAP_STABLE_CONFIRM_TURNS = 3;
     static final int ROUTE_PERFORMANCE_ROUTE_UNKNOWN = -1;
     static final int ROUTE_PERFORMANCE_ROUTE_REALTIME = 0;
     static final int ROUTE_PERFORMANCE_ROUTE_FILE = 1;
@@ -272,12 +273,16 @@ final class RealtimeRoutingPolicy {
         return ROUTE_LATENCY_FILE_MARGIN_MS + jitterExtraMarginMs + sampleExtraMarginMs;
     }
 
+    static boolean isRouteFlapHistoryFresh(long lastDecisionAtMs, long nowMs) {
+        return lastDecisionAtMs > 0L
+                && nowMs >= lastDecisionAtMs
+                && nowMs - lastDecisionAtMs <= ROUTE_FLAP_WINDOW_MS;
+    }
+
     static int activeRouteFlapScore(int currentScore, long lastDecisionAtMs, long nowMs) {
         int safe = Math.max(0, Math.min(ROUTE_FLAP_MAX_SCORE, currentScore));
         if (safe <= 0) return 0;
-        if (lastDecisionAtMs <= 0L || nowMs < lastDecisionAtMs
-                || nowMs - lastDecisionAtMs > ROUTE_FLAP_WINDOW_MS) return 0;
-        return safe;
+        return isRouteFlapHistoryFresh(lastDecisionAtMs, nowMs) ? safe : 0;
     }
 
     static int nextRouteFlapScore(int currentScore, int previousRoute,
@@ -316,6 +321,22 @@ final class RealtimeRoutingPolicy {
             return Math.min(ROUTE_FLAP_MAX_SCORE, safe + 1);
         }
         return safe;
+    }
+
+    static int nextStablePerformanceRouteStreak(
+            int currentStreak, int currentRoute, int nextRoute) {
+        boolean currentKnown = currentRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || currentRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        boolean nextKnown = nextRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                || nextRoute == ROUTE_PERFORMANCE_ROUTE_FILE;
+        if (!nextKnown) return 0;
+        if (!currentKnown || nextRoute != currentRoute) return 1;
+        int safe = Math.max(1, Math.min(ROUTE_FLAP_STABLE_CONFIRM_TURNS, currentStreak));
+        return Math.min(ROUTE_FLAP_STABLE_CONFIRM_TURNS, safe + 1);
+    }
+
+    static boolean shouldReleaseRouteFlapHistory(int stableRouteStreak) {
+        return stableRouteStreak >= ROUTE_FLAP_STABLE_CONFIRM_TURNS;
     }
 
     static boolean isRouteFlapReversal(

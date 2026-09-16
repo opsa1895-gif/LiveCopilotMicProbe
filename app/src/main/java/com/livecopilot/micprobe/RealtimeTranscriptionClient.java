@@ -91,6 +91,7 @@ final class RealtimeTranscriptionClient {
     private String lastRouteDecisionLabel = "file";
     private String lastRouteDecisionReason = "rt-unavailable";
     private int routeFlapScore;
+    private int stablePerformanceRouteStreak;
     private int previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
     private int lastPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
     private long lastPerformanceRouteDecisionAtMs;
@@ -155,6 +156,7 @@ final class RealtimeTranscriptionClient {
         lastRouteDecisionLabel = "file";
         lastRouteDecisionReason = "rt-unavailable";
         routeFlapScore = 0;
+        stablePerformanceRouteStreak = 0;
         previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
         lastPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
         lastPerformanceRouteDecisionAtMs = 0L;
@@ -419,6 +421,16 @@ final class RealtimeTranscriptionClient {
 
     private void notePerformanceRouteDecisionLocked(int route, String reason, long nowMs) {
         if (!RealtimeRoutingPolicy.isTrackableRouteDecisionReason(reason)) return;
+        if (!RealtimeRoutingPolicy.isRouteFlapHistoryFresh(
+                lastPerformanceRouteDecisionAtMs, nowMs)) {
+            routeFlapScore = 0;
+            stablePerformanceRouteStreak = 0;
+            previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+            lastPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+        }
+
+        int nextStableStreak = RealtimeRoutingPolicy.nextStablePerformanceRouteStreak(
+                stablePerformanceRouteStreak, lastPerformanceRoute, route);
         routeFlapScore = RealtimeRoutingPolicy.nextRouteFlapScoreFromHistory(
                 routeFlapScore, previousPerformanceRoute, lastPerformanceRoute,
                 lastPerformanceRouteDecisionAtMs, route, nowMs);
@@ -428,7 +440,12 @@ final class RealtimeTranscriptionClient {
             previousPerformanceRoute = lastPerformanceRoute;
             lastPerformanceRoute = route;
         }
+        stablePerformanceRouteStreak = nextStableStreak;
         lastPerformanceRouteDecisionAtMs = nowMs;
+        if (RealtimeRoutingPolicy.shouldReleaseRouteFlapHistory(stablePerformanceRouteStreak)) {
+            routeFlapScore = 0;
+            previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+        }
     }
 
     synchronized String routeDecisionDiagnostics() {
@@ -438,10 +455,18 @@ final class RealtimeTranscriptionClient {
         StringBuilder out = new StringBuilder("route why ").append(lastRouteDecisionReason)
                 .append(" • n ").append(realtimeRouteLatencySamples)
                 .append('/').append(fileRouteLatencySamples);
-        String routeHistory = RealtimeRoutingPolicy.performanceRouteHistoryLabel(
-                previousPerformanceRoute, lastPerformanceRoute);
+        boolean routeHistoryFresh = RealtimeRoutingPolicy.isRouteFlapHistoryFresh(
+                lastPerformanceRouteDecisionAtMs, now);
+        String routeHistory = routeHistoryFresh
+                ? RealtimeRoutingPolicy.performanceRouteHistoryLabel(
+                        previousPerformanceRoute, lastPerformanceRoute)
+                : "-";
         if (!"-".equals(routeHistory)) {
             out.append(" • hist ").append(routeHistory);
+            if (stablePerformanceRouteStreak > 0) {
+                out.append(" • stable×").append(stablePerformanceRouteStreak)
+                        .append('/').append(RealtimeRoutingPolicy.ROUTE_FLAP_STABLE_CONFIRM_TURNS);
+            }
         }
         if (activeFlapScore > 0) {
             out.append(" • flap×").append(activeFlapScore)

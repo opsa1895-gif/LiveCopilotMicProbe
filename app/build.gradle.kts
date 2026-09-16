@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 84
-        versionName = "0.83.0-route-reversal-memory"
+        versionCode = 85
+        versionName = "0.84.0-stable-route-release"
     }
 
     compileOptions {
