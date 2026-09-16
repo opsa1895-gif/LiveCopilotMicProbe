@@ -6,6 +6,7 @@ final class RouteReleaseOutcomeStats {
     static final int STABLE_REVERSAL_RATE_MAX_PERCENT = 25;
     static final int HIGH_REVERSAL_RISK_MIN_PERCENT = 50;
     static final int SIGNAL_CHANGE_CONFIRM_OUTCOMES = 2;
+    static final int MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES = 2;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -104,6 +105,18 @@ final class RouteReleaseOutcomeStats {
         return supersededSignalTransitions[reason];
     }
 
+    int transitionConfirmationRateSampleCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return transitionConfirmationRateSampleCount(reason);
+    }
+
+    int transitionConfirmationRatePercent(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return -1;
+        return transitionConfirmationRatePercent(reason);
+    }
+
     void clear() {
         for (int reason = 0; reason < REASON_COUNT; reason++) {
             for (int outcome = 0; outcome < OUTCOME_COUNT; outcome++) {
@@ -161,6 +174,11 @@ final class RouteReleaseOutcomeStats {
                     out.append(" cancel=").append(revertedSignalTransitions[reason]).append('/')
                             .append(supersededSignalTransitions[reason]);
                 }
+                int confirmationSamples = transitionConfirmationRateSampleCount(reason);
+                if (confirmationSamples >= MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES) {
+                    out.append(" conf").append(transitionConfirmationRatePercent(reason)).append("%@")
+                            .append(confirmationSamples);
+                }
             }
         }
         return out.toString();
@@ -170,6 +188,17 @@ final class RouteReleaseOutcomeStats {
         int samples = recentDirectionalSize[reason];
         if (samples < MIN_REVERSAL_RATE_SAMPLES) return -1;
         return (int) (((long) recentDirectionalReversals[reason] * 100L) / samples);
+    }
+
+    private int transitionConfirmationRateSampleCount(int reason) {
+        long samples = (long) confirmedSignalTransitions[reason] + revertedSignalTransitions[reason];
+        return (int) Math.min(Integer.MAX_VALUE, samples);
+    }
+
+    private int transitionConfirmationRatePercent(int reason) {
+        long samples = (long) confirmedSignalTransitions[reason] + revertedSignalTransitions[reason];
+        if (samples <= 0L) return -1;
+        return (int) (((long) confirmedSignalTransitions[reason] * 100L) / samples);
     }
 
     private String reversalSignalLabel(int reason) {
