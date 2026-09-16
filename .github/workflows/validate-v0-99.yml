@@ -39,7 +39,9 @@ jobs:
           gradle-version: '9.6.1'
 
       - name: Apply v0.99 patch
-        run: python scripts/apply_v0_99.py
+        run: |
+          python scripts/apply_v0_99.py
+          python scripts/fix_v0_99_tests.py
 
       - name: Run unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
@@ -53,6 +55,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/build.gradle.kts \
             app/src/main/java/com/livecopilot/micprobe/RouteReleaseOutcomeStats.java \
+            app/src/test/java/com/livecopilot/micprobe/RouteReleaseTransitionConfirmationRateTest.java \
             app/src/test/java/com/livecopilot/micprobe/RouteReleaseTransitionConfirmationReliabilityTest.java
           git diff --cached --check
           git commit -m "Add transition confirmation reliability labels"
