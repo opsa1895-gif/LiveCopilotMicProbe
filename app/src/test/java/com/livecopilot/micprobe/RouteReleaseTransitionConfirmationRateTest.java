@@ -65,7 +65,7 @@ public class RouteReleaseTransitionConfirmationRateTest {
         assertEquals(2, stats.transitionConfirmationRateSampleCount("rt-slowdown"));
         assertEquals(50, stats.transitionConfirmationRatePercent("rt-slowdown"));
         assertEquals(
-                "rel s/r/x rtslow 6/4/0 rev50%@8 sig=stable>risk×1/2 tr=1/2 cancel=1/1 conf50%@2",
+                "rel s/r/x rtslow 6/4/0 rev50%@8 sig=stable>risk×1/2 tr=1/2 cancel=1/1 conf50%@2/mixed",
                 stats.diagnostics());
     }
 
