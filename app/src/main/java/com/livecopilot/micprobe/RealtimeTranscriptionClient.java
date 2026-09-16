@@ -443,9 +443,27 @@ final class RealtimeTranscriptionClient {
         stablePerformanceRouteStreak = nextStableStreak;
         lastPerformanceRouteDecisionAtMs = nowMs;
         if (RealtimeRoutingPolicy.shouldReleaseRouteFlapHistory(stablePerformanceRouteStreak)) {
-            routeFlapScore = 0;
-            previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+            clearRouteFlapHistoryLocked(false);
         }
+    }
+
+    private void maybeReleaseRouteFlapHistoryForLatencyRegimeLocked(
+            int changedRoute, int outlierDirection, int outlierStreak, long nowMs) {
+        int activeFlapScore = RealtimeRoutingPolicy.activeRouteFlapScore(
+                routeFlapScore, lastPerformanceRouteDecisionAtMs, nowMs);
+        if (!RealtimeRoutingPolicy.shouldReleaseRouteFlapHistoryForRegimeChange(
+                activeFlapScore, changedRoute, outlierDirection, outlierStreak,
+                realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
+                realtimeRouteLatencySamples, realtimeRouteLatencySampleAtMs,
+                fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
+                fileRouteLatencySamples, fileRouteLatencySampleAtMs, nowMs)) return;
+        clearRouteFlapHistoryLocked(true);
+    }
+
+    private void clearRouteFlapHistoryLocked(boolean resetStableStreak) {
+        routeFlapScore = 0;
+        previousPerformanceRoute = RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN;
+        if (resetStableStreak) stablePerformanceRouteStreak = 0;
     }
 
     synchronized String routeDecisionDiagnostics() {
@@ -537,6 +555,9 @@ final class RealtimeTranscriptionClient {
             realtimeRouteLatencySampleAtMs = now;
             realtimeRouteLatencyOutlierDirection = nextDirection;
             realtimeRouteLatencyOutlierStreak = nextOutlierStreak;
+            maybeReleaseRouteFlapHistoryForLatencyRegimeLocked(
+                    RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_REALTIME,
+                    nextDirection, nextOutlierStreak, now);
         }
 
         routingQualityPenalty = RealtimeRoutingPolicy.nextOutcomePenalty(
@@ -601,6 +622,9 @@ final class RealtimeTranscriptionClient {
             fileRouteLatencySampleAtMs = now;
             fileRouteLatencyOutlierDirection = nextDirection;
             fileRouteLatencyOutlierStreak = nextOutlierStreak;
+            maybeReleaseRouteFlapHistoryForLatencyRegimeLocked(
+                    RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_FILE,
+                    nextDirection, nextOutlierStreak, now);
         } else if (!performanceEligible) {
             // A degraded/cooldown file lane cannot keep winning on stale speed history,
             // even if its transcript coverage was still usable enough for context.

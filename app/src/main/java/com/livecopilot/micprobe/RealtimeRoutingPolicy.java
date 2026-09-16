@@ -339,6 +339,24 @@ final class RealtimeRoutingPolicy {
         return stableRouteStreak >= ROUTE_FLAP_STABLE_CONFIRM_TURNS;
     }
 
+    static boolean shouldReleaseRouteFlapHistoryForRegimeChange(
+            int routeFlapScore, int changedRoute, int outlierDirection, int outlierStreak,
+            long realtimeEstimateMs, long realtimeJitterMs, int realtimeSamples,
+            long realtimeSampleAtMs, long fileEstimateMs, long fileJitterMs,
+            int fileSamples, long fileSampleAtMs, long nowMs) {
+        if (routeFlapScore <= 0
+                || !isRouteLatencyRegimeChange(outlierDirection, outlierStreak)) return false;
+        boolean fileFavoringShift = changedRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
+                ? outlierDirection > 0
+                : changedRoute == ROUTE_PERFORMANCE_ROUTE_FILE && outlierDirection < 0;
+        if (!fileFavoringShift) return false;
+        if (!isRouteLatencyFresh(realtimeSampleAtMs, nowMs)
+                || !isRouteLatencyFresh(fileSampleAtMs, nowMs)) return false;
+        return hasConfidentFileLatencyAdvantage(
+                realtimeEstimateMs, realtimeJitterMs, realtimeSamples,
+                fileEstimateMs, fileJitterMs, fileSamples);
+    }
+
     static boolean isRouteFlapReversal(
             int previousDistinctRoute, int currentRoute, int nextRoute) {
         boolean previousKnown = previousDistinctRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME
