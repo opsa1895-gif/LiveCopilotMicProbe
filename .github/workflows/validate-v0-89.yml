@@ -54,3 +54,5 @@ jobs:
             app/src/test/java/com/livecopilot/micprobe/RouteReleaseOutcomeStatsTest.java
           git commit -m "Break down regime release outcomes by reason"
           git push origin HEAD:v0-89-regime-release-breakdown
+
+# validation trigger
