@@ -70,47 +70,108 @@ public class RouteReleaseOutcomeStatsTest {
     @Test
     public void signalLabelsSeparateStableMixedAndHighReversalRisk() {
         RouteReleaseOutcomeStats stable = new RouteReleaseOutcomeStats();
+        stable.record("rt-speedup", "stable");
+        stable.record("rt-speedup", "stable");
+        stable.record("rt-speedup", "stable");
         stable.record("rt-speedup", "reversal");
-        stable.record("rt-speedup", "stable");
-        stable.record("rt-speedup", "stable");
-        stable.record("rt-speedup", "stable");
 
         assertEquals(25, stable.reversalRatePercent("rt-speedup"));
         assertEquals("stable", stable.reversalSignalLabel("rt-speedup"));
 
         RouteReleaseOutcomeStats mixed = new RouteReleaseOutcomeStats();
         mixed.record("file-speedup", "reversal");
-        mixed.record("file-speedup", "reversal");
-        mixed.record("file-speedup", "stable");
         mixed.record("file-speedup", "stable");
         mixed.record("file-speedup", "stable");
 
-        assertEquals(40, mixed.reversalRatePercent("file-speedup"));
+        assertEquals(33, mixed.reversalRatePercent("file-speedup"));
         assertEquals("mixed", mixed.reversalSignalLabel("file-speedup"));
 
         RouteReleaseOutcomeStats risk = new RouteReleaseOutcomeStats();
         risk.record("file-slowdown", "reversal");
         risk.record("file-slowdown", "reversal");
         risk.record("file-slowdown", "stable");
-        risk.record("file-slowdown", "stable");
 
-        assertEquals(50, risk.reversalRatePercent("file-slowdown"));
+        assertEquals(66, risk.reversalRatePercent("file-slowdown"));
         assertEquals("risk", risk.reversalSignalLabel("file-slowdown"));
     }
 
     @Test
-    public void expiredOutcomesDoNotEnterRecentDirectionalWindow() {
+    public void singleBoundaryClassificationDoesNotFlipLatchedSignal() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        stats.record("rt-speedup", "stable");
+        stats.record("rt-speedup", "stable");
+        stats.record("rt-speedup", "stable");
+        stats.record("rt-speedup", "reversal");
+        stats.record("rt-speedup", "reversal");
+
+        assertEquals(40, stats.reversalRatePercent("rt-speedup"));
+        assertEquals("stable", stats.reversalSignalLabel("rt-speedup"));
+        assertEquals("rel s/r/x rtfast 3/2/0 rev40%@5 sig=stable", stats.diagnostics());
+    }
+
+    @Test
+    public void secondConsecutiveCandidateClassificationCommitsSignalChange() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        stats.record("rt-speedup", "stable");
+        stats.record("rt-speedup", "stable");
+        stats.record("rt-speedup", "stable");
+        stats.record("rt-speedup", "reversal");
+        stats.record("rt-speedup", "reversal");
+        stats.record("rt-speedup", "stable");
+
+        assertEquals(RouteReleaseOutcomeStats.SIGNAL_CHANGE_CONFIRM_OUTCOMES, 2);
+        assertEquals(33, stats.reversalRatePercent("rt-speedup"));
+        assertEquals("mixed", stats.reversalSignalLabel("rt-speedup"));
+    }
+
+    @Test
+    public void candidateMustStayConsistentAcrossConfirmationOutcomes() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        stats.record("file-speedup", "reversal");
+        stats.record("file-speedup", "stable");
+        stats.record("file-speedup", "stable");
+        assertEquals("mixed", stats.reversalSignalLabel("file-speedup"));
+
+        stats.record("file-speedup", "reversal");
+        assertEquals(50, stats.reversalRatePercent("file-speedup"));
+        assertEquals("mixed", stats.reversalSignalLabel("file-speedup"));
+
+        stats.record("file-speedup", "stable");
+        assertEquals(40, stats.reversalRatePercent("file-speedup"));
+        assertEquals("mixed", stats.reversalSignalLabel("file-speedup"));
+
+        stats.record("file-speedup", "reversal");
+        assertEquals(50, stats.reversalRatePercent("file-speedup"));
+        assertEquals("mixed", stats.reversalSignalLabel("file-speedup"));
+
+        stats.record("file-speedup", "reversal");
+        assertEquals(57, stats.reversalRatePercent("file-speedup"));
+        assertEquals("risk", stats.reversalSignalLabel("file-speedup"));
+    }
+
+    @Test
+    public void expiredOutcomesDoNotEnterRecentDirectionalWindowOrAdvanceSignalChange() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        stats.record("file-speedup", "stable");
+        stats.record("file-speedup", "stable");
         stats.record("file-speedup", "stable");
         stats.record("file-speedup", "reversal");
         stats.record("file-speedup", "reversal");
+
+        assertEquals(5, stats.reversalRateSampleCount("file-speedup"));
+        assertEquals(40, stats.reversalRatePercent("file-speedup"));
+        assertEquals("stable", stats.reversalSignalLabel("file-speedup"));
+
         stats.record("file-speedup", "expired");
         stats.record("file-speedup", "expired");
 
-        assertEquals(3, stats.reversalRateSampleCount("file-speedup"));
-        assertEquals(66, stats.reversalRatePercent("file-speedup"));
-        assertEquals("risk", stats.reversalSignalLabel("file-speedup"));
-        assertEquals("rel s/r/x ffast 1/2/2 rev66%@3 sig=risk", stats.diagnostics());
+        assertEquals(5, stats.reversalRateSampleCount("file-speedup"));
+        assertEquals(40, stats.reversalRatePercent("file-speedup"));
+        assertEquals("stable", stats.reversalSignalLabel("file-speedup"));
+
+        stats.record("file-speedup", "stable");
+        assertEquals(33, stats.reversalRatePercent("file-speedup"));
+        assertEquals("mixed", stats.reversalSignalLabel("file-speedup"));
     }
 
     @Test
@@ -152,7 +213,7 @@ public class RouteReleaseOutcomeStatsTest {
     }
 
     @Test
-    public void recentWindowCanMoveSignalFromRiskToStable() {
+    public void recentWindowAndHysteresisCanMoveSignalFromRiskToStable() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
         for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
             stats.record("rt-speedup", "reversal");
@@ -162,30 +223,35 @@ public class RouteReleaseOutcomeStatsTest {
         for (int i = 0; i < 6; i++) {
             stats.record("rt-speedup", "stable");
         }
-
         assertEquals(25, stats.reversalRatePercent("rt-speedup"));
+        assertEquals("risk", stats.reversalSignalLabel("rt-speedup"));
+
+        stats.record("rt-speedup", "stable");
+        assertEquals(12, stats.reversalRatePercent("rt-speedup"));
         assertEquals("stable", stats.reversalSignalLabel("rt-speedup"));
     }
 
     @Test
-    public void reversalRatesStayIndependentAcrossReleaseReasons() {
+    public void reversalRatesAndSignalHysteresisStayIndependentAcrossReleaseReasons() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
         for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
             stats.record("rt-speedup", "stable");
             stats.record("file-slowdown", "reversal");
         }
+        stats.record("rt-speedup", "reversal");
+        stats.record("rt-speedup", "reversal");
 
-        assertEquals(0, stats.reversalRatePercent("rt-speedup"));
+        assertEquals(25, stats.reversalRatePercent("rt-speedup"));
         assertEquals(100, stats.reversalRatePercent("file-slowdown"));
         assertEquals("stable", stats.reversalSignalLabel("rt-speedup"));
         assertEquals("risk", stats.reversalSignalLabel("file-slowdown"));
         assertEquals(
-                "rel s/r/x rtfast 8/0/0 rev0%@8 sig=stable fslow 0/8/0 rev100%@8 sig=risk",
+                "rel s/r/x rtfast 8/2/0 rev25%@8 sig=stable fslow 0/8/0 rev100%@8 sig=risk",
                 stats.diagnostics());
     }
 
     @Test
-    public void clearResetsAllReasonBucketsRecentWindowsAndSignals() {
+    public void clearResetsAllReasonBucketsRecentWindowsAndSignalHysteresis() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
         for (int i = 0; i < RouteReleaseOutcomeStats.REVERSAL_RATE_WINDOW_SAMPLES; i++) {
             stats.record("rt-speedup", "reversal");
