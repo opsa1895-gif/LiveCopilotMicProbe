@@ -10,6 +10,7 @@ final class RouteReleaseOutcomeStats {
     static final int TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES = 8;
     static final int STRONG_TRANSITION_CONFIRMATION_RATE_MIN_PERCENT = 75;
     static final int WEAK_TRANSITION_CONFIRMATION_RATE_MAX_PERCENT = 25;
+    static final int RELIABILITY_CHANGE_CONFIRM_RESOLUTIONS = 2;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -43,6 +44,9 @@ final class RouteReleaseOutcomeStats {
     private final int[] recentTransitionResolutionNext = new int[REASON_COUNT];
     private final int[] recentTransitionResolutionSize = new int[REASON_COUNT];
     private final int[] recentTransitionConfirmations = new int[REASON_COUNT];
+    private final String[] latchedTransitionReliabilityLabels = new String[REASON_COUNT];
+    private final String[] candidateTransitionReliabilityLabels = new String[REASON_COUNT];
+    private final int[] candidateTransitionReliabilityStreak = new int[REASON_COUNT];
 
     void record(String releaseReason, String outcome) {
         int reason = reasonIndex(releaseReason);
@@ -134,6 +138,19 @@ final class RouteReleaseOutcomeStats {
         return transitionConfirmationReliabilityLabel(reason);
     }
 
+    String transitionConfirmationReliabilityPendingLabel(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return "-";
+        String candidate = candidateTransitionReliabilityLabels[reason];
+        return candidate != null ? candidate : "-";
+    }
+
+    int transitionConfirmationReliabilityPendingStreak(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return candidateTransitionReliabilityStreak[reason];
+    }
+
     void clear() {
         for (int reason = 0; reason < REASON_COUNT; reason++) {
             for (int outcome = 0; outcome < OUTCOME_COUNT; outcome++) {
@@ -152,6 +169,9 @@ final class RouteReleaseOutcomeStats {
             recentTransitionResolutionNext[reason] = 0;
             recentTransitionResolutionSize[reason] = 0;
             recentTransitionConfirmations[reason] = 0;
+            latchedTransitionReliabilityLabels[reason] = null;
+            candidateTransitionReliabilityLabels[reason] = null;
+            candidateTransitionReliabilityStreak[reason] = 0;
             for (int sample = 0; sample < REVERSAL_RATE_WINDOW_SAMPLES; sample++) {
                 recentDirectionalOutcomes[reason][sample] = OUTCOME_STABLE;
             }
@@ -202,6 +222,12 @@ final class RouteReleaseOutcomeStats {
                     out.append(" conf").append(transitionConfirmationRatePercent(reason)).append("%@")
                             .append(confirmationSamples).append('/')
                             .append(transitionConfirmationReliabilityLabel(reason));
+                    if (candidateTransitionReliabilityLabels[reason] != null
+                            && candidateTransitionReliabilityStreak[reason] > 0) {
+                        out.append('>').append(candidateTransitionReliabilityLabels[reason]).append('×')
+                                .append(candidateTransitionReliabilityStreak[reason]).append('/')
+                                .append(RELIABILITY_CHANGE_CONFIRM_RESOLUTIONS);
+                    }
                 }
             }
         }
@@ -238,8 +264,15 @@ final class RouteReleaseOutcomeStats {
 
     private String transitionConfirmationReliabilityLabel(int reason) {
         int samples = transitionConfirmationRateSampleCount(reason);
+        if (samples < MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES) return "learn";
+        String latched = latchedTransitionReliabilityLabels[reason];
+        return latched != null ? latched : rawTransitionConfirmationReliabilityLabel(reason);
+    }
+
+    private String rawTransitionConfirmationReliabilityLabel(int reason) {
         return transitionConfirmationReliabilityLabelForRate(
-                samples, transitionConfirmationRatePercent(reason));
+                transitionConfirmationRateSampleCount(reason),
+                transitionConfirmationRatePercent(reason));
     }
 
     private String reversalSignalLabel(int reason) {
@@ -283,6 +316,41 @@ final class RouteReleaseOutcomeStats {
         if (resolution == TRANSITION_CONFIRMED) recentTransitionConfirmations[reason]++;
         recentTransitionResolutionNext[reason] =
                 (next + 1) % TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES;
+        updateTransitionReliabilityLabel(reason);
+    }
+
+    private void updateTransitionReliabilityLabel(int reason) {
+        if (recentTransitionResolutionSize[reason] < MIN_TRANSITION_CONFIRMATION_RATE_SAMPLES) {
+            latchedTransitionReliabilityLabels[reason] = null;
+            candidateTransitionReliabilityLabels[reason] = null;
+            candidateTransitionReliabilityStreak[reason] = 0;
+            return;
+        }
+
+        String rawLabel = rawTransitionConfirmationReliabilityLabel(reason);
+        String latchedLabel = latchedTransitionReliabilityLabels[reason];
+        if (latchedLabel == null) {
+            latchedTransitionReliabilityLabels[reason] = rawLabel;
+            candidateTransitionReliabilityLabels[reason] = null;
+            candidateTransitionReliabilityStreak[reason] = 0;
+            return;
+        }
+        if (rawLabel.equals(latchedLabel)) {
+            candidateTransitionReliabilityLabels[reason] = null;
+            candidateTransitionReliabilityStreak[reason] = 0;
+            return;
+        }
+        if (rawLabel.equals(candidateTransitionReliabilityLabels[reason])) {
+            candidateTransitionReliabilityStreak[reason]++;
+        } else {
+            candidateTransitionReliabilityLabels[reason] = rawLabel;
+            candidateTransitionReliabilityStreak[reason] = 1;
+        }
+        if (candidateTransitionReliabilityStreak[reason] >= RELIABILITY_CHANGE_CONFIRM_RESOLUTIONS) {
+            latchedTransitionReliabilityLabels[reason] = rawLabel;
+            candidateTransitionReliabilityLabels[reason] = null;
+            candidateTransitionReliabilityStreak[reason] = 0;
+        }
     }
 
     private void updateSignalLabel(int reason) {
