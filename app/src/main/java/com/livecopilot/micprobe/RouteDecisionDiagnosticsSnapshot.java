@@ -1,6 +1,8 @@
 package com.livecopilot.micprobe;
 
 final class RouteDecisionDiagnosticsSnapshot {
+    static final int RELEASE_STATS_CHAR_BUDGET = 96;
+
     private final String decisionReason;
     private final int realtimeSamples;
     private final int fileSamples;
@@ -70,8 +72,9 @@ final class RouteDecisionDiagnosticsSnapshot {
                 out.append('×').append(releaseStableStreak).append('/').append(confirmTurns);
             }
         }
-        if (releaseBreakdown != null && !releaseBreakdown.isEmpty()) {
-            out.append(" • stats{").append(releaseBreakdown).append('}');
+        String boundedReleaseBreakdown = boundedReleaseBreakdown(releaseBreakdown);
+        if (!boundedReleaseBreakdown.isEmpty()) {
+            out.append(" • stats{").append(boundedReleaseBreakdown).append('}');
         }
         if (isKnown(routeHistory)) {
             out.append(" • hist=").append(routeHistory);
@@ -99,6 +102,16 @@ final class RouteDecisionDiagnosticsSnapshot {
             out.append("off/").append(guardDurationMs).append("ms");
         }
         return out.toString();
+    }
+
+    private static String boundedReleaseBreakdown(String value) {
+        if (value == null || value.isEmpty()) return "";
+        if (value.length() <= RELEASE_STATS_CHAR_BUDGET) return value;
+
+        int contentLimit = RELEASE_STATS_CHAR_BUDGET - 1;
+        int boundary = value.lastIndexOf(' ', contentLimit);
+        if (boundary <= 0) boundary = contentLimit;
+        return value.substring(0, boundary) + '…';
     }
 
     private static boolean isKnown(String value) {
