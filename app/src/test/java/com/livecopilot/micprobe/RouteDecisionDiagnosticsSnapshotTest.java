@@ -86,12 +86,47 @@ public class RouteDecisionDiagnosticsSnapshotTest {
     }
 
     @Test
-    public void pathologicalLabelsReserveTotalOmittedTokenCountWithinHardBudget() {
+    public void multiReasonStatsKeepEveryReasonSummaryBeforeSecondaryDetails() {
+        RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
+                "switch-guard", 8, 8,
+                false, "-", "-", 0, 3,
+                multiReasonBreakdown(),
+                "-", 0,
+                0, 0L,
+                false, Long.MIN_VALUE, Long.MAX_VALUE, 0L, 0L);
+
+        assertEquals(
+                "rel s/r/x rtslow 1/2/3 rtfast 7/8/9 ffast 2/0/1 fslow 3/1/0 …more+15",
+                statsContent(snapshot.format()));
+    }
+
+    @Test
+    public void dynamicBudgetFallsBackToAllReasonLabelsBeforeDroppingAReason() {
+        RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
+                "switch-guard", 8, 8,
+                true, "rt-slowdown", "pending", 1, 3,
+                multiReasonBreakdown(),
+                "rt>file", 1,
+                1, 200L,
+                true, 300L, 900L, 0L, 1_500L);
+
+        String formatted = snapshot.format();
+        assertTrue(formatted.length() <= RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET);
+        assertEquals(
+                "rel s/r/x rtslow rtfast ffast fslow …more+19",
+                statsContent(formatted));
+        assertTrue(formatted.contains(" • hist=rt>file stable×1/3"));
+        assertTrue(formatted.contains(" • flap×1(+200ms)"));
+        assertTrue(formatted.contains("guard=off/1500ms"));
+    }
+
+    @Test
+    public void pathologicalLabelsReserveEveryReasonWithinHardBudget() {
         String longLabel = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(8);
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 longLabel, Integer.MAX_VALUE, Integer.MAX_VALUE,
                 true, longLabel, longLabel, Integer.MAX_VALUE, Integer.MAX_VALUE,
-                longReleaseBreakdown() + " " + longReleaseBreakdown(),
+                multiReasonBreakdown(),
                 longLabel, Integer.MAX_VALUE,
                 Integer.MAX_VALUE, Long.MAX_VALUE,
                 true, Long.MAX_VALUE - 1L, Long.MAX_VALUE - 1L,
@@ -101,7 +136,8 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         assertTrue(formatted.length() <= RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET);
         assertTrue(formatted.startsWith("route why="));
         assertTrue(formatted.contains(" • release="));
-        assertTrue(formatted.contains(" • stats{…more+38}"));
+        assertTrue(formatted.contains(
+                " • stats{rtslow rtfast ffast fslow …more+21}"));
         assertTrue(formatted.contains(" • hist="));
         assertTrue(formatted.contains(" • flap×"));
         assertTrue(formatted.contains(" • lat"));
@@ -139,6 +175,14 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         return "rel s/r/x rtslow 1/2/3 sup=4 rev50%@8 sig=risky tr=5/6 cancel=2/4"
                 + " conf75%@8/strong rtr=3/2 rcancel=1/1 rmat=mature rconf75%@8"
                 + " rtspeed 7/8/9 sup=10 rev25%@8 sig=stable";
+    }
+
+    private static String multiReasonBreakdown() {
+        return "rel s/r/x rtslow 1/2/3 sup=4 rev50%@8 sig=risky tr=5/6 cancel=2/4"
+                + " conf75%@8/strong rtr=3/2 rcancel=1/1 rmat=mature rconf75%@8"
+                + " rtfast 7/8/9 sup=10 rev25%@8 sig=stable"
+                + " ffast 2/0/1 sig=learn"
+                + " fslow 3/1/0 sig=stable";
     }
 
     private static String statsContent(String formatted) {
