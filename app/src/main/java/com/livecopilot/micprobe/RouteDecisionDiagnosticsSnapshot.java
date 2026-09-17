@@ -198,6 +198,14 @@ final class RouteDecisionDiagnosticsSnapshot {
                 tokens, true, false, false, charBudget);
         if (candidate != null) return candidate;
 
+        candidate = prioritizedReasonSummary(
+                tokens, false, false, false, charBudget);
+        if (candidate != null) return candidate;
+
+        String labelsWithHeader = reasonSummary(tokens, true, false);
+        candidate = summaryWithOmission(labelsWithHeader, tokens.length, charBudget);
+        if (candidate != null) return candidate;
+
         String labelsOnly = reasonSummary(tokens, false, false);
         candidate = summaryWithOmission(labelsOnly, tokens.length, charBudget);
         if (candidate != null) return candidate;
@@ -217,25 +225,43 @@ final class RouteDecisionDiagnosticsSnapshot {
         if (best == null) return null;
 
         boolean[] attemptedPriority = new boolean[tokens.length];
-        for (String prefix : STATS_DETAIL_PRIORITY_PREFIXES) {
-            for (int i = 0; i < tokens.length; i++) {
-                if (!isOptionalReasonDetail(tokens, i, selected, includeCounts)
-                        || attemptedPriority[i]
-                        || !tokens[i].startsWith(prefix)) {
-                    continue;
-                }
-                attemptedPriority[i] = true;
-                selected[i] = true;
-                String expanded = selectedSummaryWithOmission(tokens, selected, charBudget);
-                if (expanded != null) {
-                    best = expanded;
-                } else {
-                    selected[i] = false;
+        int priorityRound = 0;
+        boolean priorityBlocked = false;
+        while (true) {
+            int[] round = new int[STATS_REASON_LABELS.length];
+            for (int reason = 0; reason < round.length; reason++) {
+                round[reason] = nextPriorityDetailIndex(
+                        tokens, selected, includeCounts, reason);
+            }
+
+            boolean hasRound = false;
+            for (int index : round) {
+                if (index >= 0) {
+                    hasRound = true;
+                    selected[index] = true;
                 }
             }
+            if (!hasRound) break;
+
+            String expanded = selectedSummaryWithOmission(tokens, selected, charBudget);
+            if (expanded != null) {
+                best = expanded;
+                for (int index : round) {
+                    if (index >= 0) attemptedPriority[index] = true;
+                }
+                priorityRound++;
+                continue;
+            }
+
+            for (int index : round) {
+                if (index >= 0) selected[index] = false;
+            }
+            if (priorityRound == 0) return null;
+            priorityBlocked = true;
+            break;
         }
 
-        if (!includeSecondaryDetails) return best;
+        if (!includeSecondaryDetails || priorityBlocked) return best;
         for (int i = 0; i < tokens.length; i++) {
             if (attemptedPriority[i]
                     || !isOptionalReasonDetail(tokens, i, selected, includeCounts)) {
@@ -250,6 +276,24 @@ final class RouteDecisionDiagnosticsSnapshot {
             }
         }
         return best;
+    }
+
+    private static int nextPriorityDetailIndex(
+            String[] tokens,
+            boolean[] selected,
+            boolean includeCounts,
+            int reason) {
+        for (String prefix : STATS_DETAIL_PRIORITY_PREFIXES) {
+            for (int i = 0; i < tokens.length; i++) {
+                if (reasonBefore(tokens, i) != reason
+                        || !isOptionalReasonDetail(tokens, i, selected, includeCounts)
+                        || !tokens[i].startsWith(prefix)) {
+                    continue;
+                }
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static boolean[] reasonBaseSelection(
