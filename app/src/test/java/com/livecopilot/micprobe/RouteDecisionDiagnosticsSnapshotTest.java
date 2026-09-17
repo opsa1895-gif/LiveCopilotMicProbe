@@ -86,7 +86,7 @@ public class RouteDecisionDiagnosticsSnapshotTest {
     }
 
     @Test
-    public void multiReasonStatsKeepEveryReasonSummaryBeforeSecondaryDetails() {
+    public void multiReasonStatsPrioritizeSignalsAfterEveryReasonSummary() {
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 "switch-guard", 8, 8,
                 false, "-", "-", 0, 3,
@@ -96,12 +96,14 @@ public class RouteDecisionDiagnosticsSnapshotTest {
                 false, Long.MIN_VALUE, Long.MAX_VALUE, 0L, 0L);
 
         assertEquals(
-                "rel s/r/x rtslow 1/2/3 rtfast 7/8/9 ffast 2/0/1 fslow 3/1/0 …more+15",
+                "rel s/r/x rtslow 1/2/3 sup=4 sig=risky"
+                        + " rtfast 7/8/9 sig=stable"
+                        + " ffast 2/0/1 fslow 3/1/0 …more+12",
                 statsContent(snapshot.format()));
     }
 
     @Test
-    public void dynamicBudgetFallsBackToAllReasonLabelsBeforeDroppingAReason() {
+    public void dynamicBudgetPrioritizesSignalsWhileKeepingAllReasonLabels() {
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 "switch-guard", 8, 8,
                 true, "rt-slowdown", "pending", 1, 3,
@@ -113,11 +115,29 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         String formatted = snapshot.format();
         assertTrue(formatted.length() <= RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET);
         assertEquals(
-                "rel s/r/x rtslow rtfast ffast fslow …more+19",
+                "rel s/r/x rtslow sig=risky rtfast sig=stable"
+                        + " ffast fslow …more+17",
                 statsContent(formatted));
         assertTrue(formatted.contains(" • hist=rt>file stable×1/3"));
         assertTrue(formatted.contains(" • flap×1(+200ms)"));
         assertTrue(formatted.contains("guard=off/1500ms"));
+    }
+
+    @Test
+    public void prioritizedStatsSkipLinearTransitionNoiseBeforeSignals() {
+        String stats = statsContent(new RouteDecisionDiagnosticsSnapshot(
+                "switch-guard", 8, 8,
+                false, "-", "-", 0, 3,
+                multiReasonBreakdown(),
+                "-", 0,
+                0, 0L,
+                false, Long.MIN_VALUE, Long.MAX_VALUE, 0L, 0L).format());
+
+        assertTrue(stats.contains("sig=risky"));
+        assertTrue(stats.contains("sig=stable"));
+        assertTrue(!stats.contains("tr=5/6"));
+        assertTrue(!stats.contains("cancel=2/4"));
+        assertTrue(!stats.contains("conf75%@8/strong"));
     }
 
     @Test
