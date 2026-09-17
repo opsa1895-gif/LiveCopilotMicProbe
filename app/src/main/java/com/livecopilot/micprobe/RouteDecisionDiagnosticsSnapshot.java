@@ -2,6 +2,14 @@ package com.livecopilot.micprobe;
 
 final class RouteDecisionDiagnosticsSnapshot {
     static final int RELEASE_STATS_CHAR_BUDGET = 96;
+    static final int SNAPSHOT_CHAR_BUDGET = 224;
+
+    private static final String STATS_SECTION_PREFIX = " • stats{";
+    private static final int CORE_OVERFLOW_BUDGET = 52;
+    private static final int RELEASE_OVERFLOW_BUDGET = 44;
+    private static final int HISTORY_OVERFLOW_BUDGET = 28;
+    private static final int FLAP_OVERFLOW_BUDGET = 20;
+    private static final int LATENCY_OVERFLOW_BUDGET = 80;
 
     private final String decisionReason;
     private final int realtimeSamples;
@@ -62,33 +70,60 @@ final class RouteDecisionDiagnosticsSnapshot {
     }
 
     String format() {
-        StringBuilder out = new StringBuilder("route why=")
-                .append(labelOrDash(decisionReason))
-                .append(" n=").append(realtimeSamples).append('/').append(fileSamples);
-        if (releaseFresh && isKnown(releaseReason)) {
-            out.append(" • release=").append(releaseReason)
-                    .append(':').append(labelOrDash(releaseOutcome));
-            if ("pending".equals(releaseOutcome)) {
-                out.append('×').append(releaseStableStreak).append('/').append(confirmTurns);
-            }
-        }
-        String boundedReleaseBreakdown = boundedReleaseBreakdown(releaseBreakdown);
-        if (!boundedReleaseBreakdown.isEmpty()) {
-            out.append(" • stats{").append(boundedReleaseBreakdown).append('}');
-        }
-        if (isKnown(routeHistory)) {
-            out.append(" • hist=").append(routeHistory);
-            if (stableRouteStreak > 0) {
-                out.append(" stable×").append(stableRouteStreak).append('/').append(confirmTurns);
-            }
-        }
-        if (flapScore > 0) {
-            out.append(" • flap×").append(flapScore)
-                    .append("(+").append(flapExtraMarginMs).append("ms)");
-        }
-        if (!latencyReady) return out.toString();
+        String core = coreSection();
+        String release = releaseSection();
+        String history = historySection();
+        String flap = flapSection();
+        String latency = latencySection();
 
-        out.append(" • lat");
+        int nonStatsLength = core.length() + release.length() + history.length()
+                + flap.length() + latency.length();
+        if (nonStatsLength > SNAPSHOT_CHAR_BUDGET) {
+            return boundedNonStatsSnapshot(core, release, history, flap, latency);
+        }
+
+        String stats = statsSection(
+                releaseBreakdown, SNAPSHOT_CHAR_BUDGET - nonStatsLength);
+        return core + release + stats + history + flap + latency;
+    }
+
+    private String coreSection() {
+        return new StringBuilder("route why=")
+                .append(labelOrDash(decisionReason))
+                .append(" n=").append(realtimeSamples).append('/').append(fileSamples)
+                .toString();
+    }
+
+    private String releaseSection() {
+        if (!releaseFresh || !isKnown(releaseReason)) return "";
+        StringBuilder out = new StringBuilder(" • release=")
+                .append(releaseReason)
+                .append(':').append(labelOrDash(releaseOutcome));
+        if ("pending".equals(releaseOutcome)) {
+            out.append('×').append(releaseStableStreak).append('/').append(confirmTurns);
+        }
+        return out.toString();
+    }
+
+    private String historySection() {
+        if (!isKnown(routeHistory)) return "";
+        StringBuilder out = new StringBuilder(" • hist=").append(routeHistory);
+        if (stableRouteStreak > 0) {
+            out.append(" stable×").append(stableRouteStreak).append('/').append(confirmTurns);
+        }
+        return out.toString();
+    }
+
+    private String flapSection() {
+        if (flapScore <= 0) return "";
+        return new StringBuilder(" • flap×").append(flapScore)
+                .append("(+").append(flapExtraMarginMs).append("ms)")
+                .toString();
+    }
+
+    private String latencySection() {
+        if (!latencyReady) return "";
+        StringBuilder out = new StringBuilder(" • lat");
         if (riskGapMs != Long.MIN_VALUE) {
             out.append(" gap=").append(riskGapMs).append("ms");
         }
@@ -104,14 +139,49 @@ final class RouteDecisionDiagnosticsSnapshot {
         return out.toString();
     }
 
-    private static String boundedReleaseBreakdown(String value) {
+    private static String statsSection(String value, int sectionBudget) {
         if (value == null || value.isEmpty()) return "";
-        if (value.length() <= RELEASE_STATS_CHAR_BUDGET) return value;
+        int contentBudget = Math.min(
+                RELEASE_STATS_CHAR_BUDGET,
+                sectionBudget - STATS_SECTION_PREFIX.length() - 1);
+        if (contentBudget <= 0) return "";
+        return STATS_SECTION_PREFIX + boundedReleaseBreakdown(value, contentBudget) + '}';
+    }
 
-        int contentLimit = RELEASE_STATS_CHAR_BUDGET - 1;
+    private static String boundedReleaseBreakdown(String value, int charBudget) {
+        if (value == null || value.isEmpty() || charBudget <= 0) return "";
+        if (value.length() <= charBudget) return value;
+        if (charBudget == 1) return "…";
+
+        int contentLimit = charBudget - 1;
         int boundary = value.lastIndexOf(' ', contentLimit);
         if (boundary <= 0) boundary = contentLimit;
         return value.substring(0, boundary) + '…';
+    }
+
+    private static String boundedNonStatsSnapshot(
+            String core, String release, String history, String flap, String latency) {
+        String bounded = boundedSection(core, CORE_OVERFLOW_BUDGET, false)
+                + boundedSection(release, RELEASE_OVERFLOW_BUDGET, false)
+                + boundedSection(history, HISTORY_OVERFLOW_BUDGET, false)
+                + boundedSection(flap, FLAP_OVERFLOW_BUDGET, false)
+                + boundedSection(latency, LATENCY_OVERFLOW_BUDGET, true);
+        if (bounded.length() <= SNAPSHOT_CHAR_BUDGET) return bounded;
+        return bounded.substring(0, SNAPSHOT_CHAR_BUDGET - 1) + '…';
+    }
+
+    private static String boundedSection(String value, int charBudget, boolean preserveTail) {
+        if (value == null || value.isEmpty() || charBudget <= 0) return "";
+        if (value.length() <= charBudget) return value;
+        if (charBudget == 1) return "…";
+        if (!preserveTail) {
+            return value.substring(0, charBudget - 1) + '…';
+        }
+
+        int headBudget = Math.min(20, charBudget - 1);
+        int tailBudget = charBudget - headBudget - 1;
+        return value.substring(0, headBudget) + '…'
+                + value.substring(value.length() - tailBudget);
     }
 
     private static boolean isKnown(String value) {
