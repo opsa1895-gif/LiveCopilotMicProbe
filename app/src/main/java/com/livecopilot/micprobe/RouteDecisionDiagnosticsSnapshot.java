@@ -6,14 +6,13 @@ final class RouteDecisionDiagnosticsSnapshot {
 
     private static final String STATS_SECTION_PREFIX = " • stats{";
     private static final String STATS_OMISSION_MARKER = "…more";
-    private static final String STATS_OMITTED_SECTION =
-            STATS_SECTION_PREFIX + STATS_OMISSION_MARKER + '}';
     private static final int STATS_MIN_VISIBLE_PREFIX_CHARS = 24;
     private static final int CORE_OVERFLOW_BUDGET = 52;
     private static final int RELEASE_OVERFLOW_BUDGET = 44;
     private static final int HISTORY_OVERFLOW_BUDGET = 28;
     private static final int FLAP_OVERFLOW_BUDGET = 20;
     private static final int LATENCY_OVERFLOW_BUDGET = 80;
+    private static final int BASE_STATS_OVERFLOW_RESERVE = 15;
 
     private final String decisionReason;
     private final int realtimeSamples;
@@ -80,12 +79,13 @@ final class RouteDecisionDiagnosticsSnapshot {
         String flap = flapSection();
         String latency = latencySection();
         boolean hasStats = hasReleaseBreakdown(releaseBreakdown);
+        String omittedStats = hasStats ? omittedStatsSection(releaseBreakdown) : "";
 
         int nonStatsLength = core.length() + release.length() + history.length()
                 + flap.length() + latency.length();
-        int requiredStatsReserve = hasStats ? STATS_OMITTED_SECTION.length() : 0;
+        int requiredStatsReserve = omittedStats.length();
         if (nonStatsLength > SNAPSHOT_CHAR_BUDGET - requiredStatsReserve) {
-            return boundedNonStatsSnapshot(core, release, history, flap, latency, hasStats);
+            return boundedNonStatsSnapshot(core, release, history, flap, latency, omittedStats);
         }
 
         String stats = statsSection(
@@ -147,7 +147,8 @@ final class RouteDecisionDiagnosticsSnapshot {
 
     private static String statsSection(String value, int sectionBudget) {
         if (!hasReleaseBreakdown(value)) return "";
-        if (sectionBudget < STATS_OMITTED_SECTION.length()) return "";
+        String omittedSection = omittedStatsSection(value);
+        if (sectionBudget < omittedSection.length()) return "";
 
         int contentBudget = Math.min(
                 RELEASE_STATS_CHAR_BUDGET,
@@ -159,36 +160,74 @@ final class RouteDecisionDiagnosticsSnapshot {
         if (!hasReleaseBreakdown(value) || charBudget <= 0) return "";
         if (value.length() <= charBudget) return value;
 
-        int suffixLength = STATS_OMISSION_MARKER.length() + 1;
+        int totalTokens = diagnosticTokenCount(value);
+        String widestMarker = omissionMarker(totalTokens);
+        int suffixLength = widestMarker.length() + 1;
         if (charBudget < STATS_MIN_VISIBLE_PREFIX_CHARS + suffixLength) {
-            return STATS_OMISSION_MARKER;
+            return widestMarker;
         }
 
         int contentLimit = charBudget - suffixLength;
-        int boundary = value.lastIndexOf(' ', contentLimit);
-        if (boundary <= 0) boundary = contentLimit;
-        return value.substring(0, boundary) + ' ' + STATS_OMISSION_MARKER;
+        int boundary = lastWhitespaceBoundary(value, contentLimit);
+        if (boundary <= 0) return widestMarker;
+
+        String visiblePrefix = value.substring(0, boundary);
+        int visibleTokens = diagnosticTokenCount(visiblePrefix);
+        int omittedTokens = Math.max(1, totalTokens - visibleTokens);
+        return visiblePrefix + ' ' + omissionMarker(omittedTokens);
+    }
+
+    private static String omittedStatsSection(String value) {
+        return STATS_SECTION_PREFIX + omissionMarker(diagnosticTokenCount(value)) + '}';
+    }
+
+    private static String omissionMarker(int omittedTokens) {
+        return STATS_OMISSION_MARKER + '+' + Math.max(1, omittedTokens);
+    }
+
+    private static int diagnosticTokenCount(String value) {
+        if (!hasReleaseBreakdown(value)) return 0;
+        int count = 0;
+        boolean inToken = false;
+        for (int i = 0; i < value.length(); i++) {
+            boolean whitespace = Character.isWhitespace(value.charAt(i));
+            if (!whitespace && !inToken) {
+                count++;
+                inToken = true;
+            } else if (whitespace) {
+                inToken = false;
+            }
+        }
+        return count;
+    }
+
+    private static int lastWhitespaceBoundary(String value, int atOrBefore) {
+        for (int i = Math.min(atOrBefore, value.length() - 1); i >= 0; i--) {
+            if (Character.isWhitespace(value.charAt(i))) return i;
+        }
+        return -1;
     }
 
     private static String boundedNonStatsSnapshot(
             String core, String release, String history, String flap, String latency,
-            boolean statsOmitted) {
+            String omittedStats) {
         int coreBudget = CORE_OVERFLOW_BUDGET;
         int releaseBudget = RELEASE_OVERFLOW_BUDGET;
         int historyBudget = HISTORY_OVERFLOW_BUDGET;
         int flapBudget = FLAP_OVERFLOW_BUDGET;
         int latencyBudget = LATENCY_OVERFLOW_BUDGET;
-        if (statsOmitted) {
+        if (!omittedStats.isEmpty()) {
             coreBudget -= 4;
             releaseBudget -= 4;
             historyBudget -= 2;
             flapBudget -= 2;
             latencyBudget -= 3;
+            coreBudget -= Math.max(0, omittedStats.length() - BASE_STATS_OVERFLOW_RESERVE);
         }
 
         String bounded = boundedSection(core, coreBudget, false)
                 + boundedSection(release, releaseBudget, false)
-                + (statsOmitted ? STATS_OMITTED_SECTION : "")
+                + omittedStats
                 + boundedSection(history, historyBudget, false)
                 + boundedSection(flap, flapBudget, false)
                 + boundedSection(latency, latencyBudget, true);
