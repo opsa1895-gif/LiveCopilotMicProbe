@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 118
-        versionName = "1.17.0-adversarial-diagnostic-parser-hardening"
+        versionCode = 119
+        versionName = "1.18.0-seeded-diagnostic-fuzz-hardening"
     }
 
     compileOptions {
