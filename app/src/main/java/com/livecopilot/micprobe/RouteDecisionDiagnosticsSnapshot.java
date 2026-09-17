@@ -5,6 +5,10 @@ final class RouteDecisionDiagnosticsSnapshot {
     static final int SNAPSHOT_CHAR_BUDGET = 224;
 
     private static final String STATS_SECTION_PREFIX = " • stats{";
+    private static final String STATS_OMISSION_MARKER = "…more";
+    private static final String STATS_OMITTED_SECTION =
+            STATS_SECTION_PREFIX + STATS_OMISSION_MARKER + '}';
+    private static final int STATS_MIN_VISIBLE_PREFIX_CHARS = 24;
     private static final int CORE_OVERFLOW_BUDGET = 52;
     private static final int RELEASE_OVERFLOW_BUDGET = 44;
     private static final int HISTORY_OVERFLOW_BUDGET = 28;
@@ -75,11 +79,13 @@ final class RouteDecisionDiagnosticsSnapshot {
         String history = historySection();
         String flap = flapSection();
         String latency = latencySection();
+        boolean hasStats = hasReleaseBreakdown(releaseBreakdown);
 
         int nonStatsLength = core.length() + release.length() + history.length()
                 + flap.length() + latency.length();
-        if (nonStatsLength > SNAPSHOT_CHAR_BUDGET) {
-            return boundedNonStatsSnapshot(core, release, history, flap, latency);
+        int requiredStatsReserve = hasStats ? STATS_OMITTED_SECTION.length() : 0;
+        if (nonStatsLength > SNAPSHOT_CHAR_BUDGET - requiredStatsReserve) {
+            return boundedNonStatsSnapshot(core, release, history, flap, latency, hasStats);
         }
 
         String stats = statsSection(
@@ -140,32 +146,52 @@ final class RouteDecisionDiagnosticsSnapshot {
     }
 
     private static String statsSection(String value, int sectionBudget) {
-        if (value == null || value.isEmpty()) return "";
+        if (!hasReleaseBreakdown(value)) return "";
+        if (sectionBudget < STATS_OMITTED_SECTION.length()) return "";
+
         int contentBudget = Math.min(
                 RELEASE_STATS_CHAR_BUDGET,
                 sectionBudget - STATS_SECTION_PREFIX.length() - 1);
-        if (contentBudget <= 0) return "";
-        return STATS_SECTION_PREFIX + boundedReleaseBreakdown(value, contentBudget) + '}';
+        return STATS_SECTION_PREFIX + boundedStatsContent(value, contentBudget) + '}';
     }
 
-    private static String boundedReleaseBreakdown(String value, int charBudget) {
-        if (value == null || value.isEmpty() || charBudget <= 0) return "";
+    private static String boundedStatsContent(String value, int charBudget) {
+        if (!hasReleaseBreakdown(value) || charBudget <= 0) return "";
         if (value.length() <= charBudget) return value;
-        if (charBudget == 1) return "…";
 
-        int contentLimit = charBudget - 1;
+        int suffixLength = STATS_OMISSION_MARKER.length() + 1;
+        if (charBudget < STATS_MIN_VISIBLE_PREFIX_CHARS + suffixLength) {
+            return STATS_OMISSION_MARKER;
+        }
+
+        int contentLimit = charBudget - suffixLength;
         int boundary = value.lastIndexOf(' ', contentLimit);
         if (boundary <= 0) boundary = contentLimit;
-        return value.substring(0, boundary) + '…';
+        return value.substring(0, boundary) + ' ' + STATS_OMISSION_MARKER;
     }
 
     private static String boundedNonStatsSnapshot(
-            String core, String release, String history, String flap, String latency) {
-        String bounded = boundedSection(core, CORE_OVERFLOW_BUDGET, false)
-                + boundedSection(release, RELEASE_OVERFLOW_BUDGET, false)
-                + boundedSection(history, HISTORY_OVERFLOW_BUDGET, false)
-                + boundedSection(flap, FLAP_OVERFLOW_BUDGET, false)
-                + boundedSection(latency, LATENCY_OVERFLOW_BUDGET, true);
+            String core, String release, String history, String flap, String latency,
+            boolean statsOmitted) {
+        int coreBudget = CORE_OVERFLOW_BUDGET;
+        int releaseBudget = RELEASE_OVERFLOW_BUDGET;
+        int historyBudget = HISTORY_OVERFLOW_BUDGET;
+        int flapBudget = FLAP_OVERFLOW_BUDGET;
+        int latencyBudget = LATENCY_OVERFLOW_BUDGET;
+        if (statsOmitted) {
+            coreBudget -= 4;
+            releaseBudget -= 4;
+            historyBudget -= 2;
+            flapBudget -= 2;
+            latencyBudget -= 3;
+        }
+
+        String bounded = boundedSection(core, coreBudget, false)
+                + boundedSection(release, releaseBudget, false)
+                + (statsOmitted ? STATS_OMITTED_SECTION : "")
+                + boundedSection(history, historyBudget, false)
+                + boundedSection(flap, flapBudget, false)
+                + boundedSection(latency, latencyBudget, true);
         if (bounded.length() <= SNAPSHOT_CHAR_BUDGET) return bounded;
         return bounded.substring(0, SNAPSHOT_CHAR_BUDGET - 1) + '…';
     }
@@ -182,6 +208,10 @@ final class RouteDecisionDiagnosticsSnapshot {
         int tailBudget = charBudget - headBudget - 1;
         return value.substring(0, headBudget) + '…'
                 + value.substring(value.length() - tailBudget);
+    }
+
+    private static boolean hasReleaseBreakdown(String value) {
+        return value != null && !value.isEmpty();
     }
 
     private static boolean isKnown(String value) {
