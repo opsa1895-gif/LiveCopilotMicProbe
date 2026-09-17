@@ -167,14 +167,16 @@ final class RouteDecisionDiagnosticsSnapshot {
                 + boundedSection(flap, FLAP_OVERFLOW_BUDGET, false)
                 + boundedSection(latency, LATENCY_OVERFLOW_BUDGET, true);
         if (bounded.length() <= SNAPSHOT_CHAR_BUDGET) return bounded;
-        return boundedReleaseBreakdown(bounded, SNAPSHOT_CHAR_BUDGET);
+        return bounded.substring(0, SNAPSHOT_CHAR_BUDGET - 1) + '…';
     }
 
     private static String boundedSection(String value, int charBudget, boolean preserveTail) {
         if (value == null || value.isEmpty() || charBudget <= 0) return "";
         if (value.length() <= charBudget) return value;
-        if (!preserveTail) return boundedReleaseBreakdown(value, charBudget);
         if (charBudget == 1) return "…";
+        if (!preserveTail) {
+            return value.substring(0, charBudget - 1) + '…';
+        }
 
         int headBudget = Math.min(20, charBudget - 1);
         int tailBudget = charBudget - headBudget - 1;
