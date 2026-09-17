@@ -3,6 +3,7 @@ package com.livecopilot.micprobe;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class RouteDecisionDiagnosticsSnapshotTest {
     @Test
@@ -35,6 +36,34 @@ public class RouteDecisionDiagnosticsSnapshotTest {
                         + " • flap×2(+400ms)"
                         + " • lat gap=700ms need=1400ms guard=1000/2500ms",
                 snapshot.format());
+    }
+
+    @Test
+    public void longReleaseStatsAreBoundedAtTokenBoundaryWithoutHidingLaterSections() {
+        String releaseBreakdown =
+                "rel s/r/x rtslow 1/2/3 sup=4 rev50%@8 sig=risky tr=5/6 cancel=2/4"
+                        + " conf75%@8/strong rtr=3/2 rcancel=1/1 rmat=mature rconf75%@8"
+                        + " rtspeed 7/8/9 sup=10 rev25%@8 sig=stable";
+        RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
+                "switch-guard", 8, 8,
+                false, "-", "-", 0, 3,
+                releaseBreakdown,
+                "rt>file", 1,
+                1, 200L,
+                true, 300L, 900L, 0L, 1_500L);
+
+        String formatted = snapshot.format();
+        assertEquals(
+                "route why=switch-guard n=8/8"
+                        + " • stats{rel s/r/x rtslow 1/2/3 sup=4 rev50%@8 sig=risky tr=5/6"
+                        + " cancel=2/4 conf75%@8/strong rtr=3/2…}"
+                        + " • hist=rt>file stable×1/3"
+                        + " • flap×1(+200ms)"
+                        + " • lat gap=300ms need=900ms guard=off/1500ms",
+                formatted);
+        String stats = formatted.substring(
+                formatted.indexOf("stats{") + "stats{".length(), formatted.indexOf('}'));
+        assertTrue(stats.length() <= RouteDecisionDiagnosticsSnapshot.RELEASE_STATS_CHAR_BUDGET);
     }
 
     @Test
