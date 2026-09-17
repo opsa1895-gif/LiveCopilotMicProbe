@@ -3,6 +3,7 @@ package com.livecopilot.micprobe;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class RouteDecisionDiagnosticsProducerIntegrationTest {
@@ -14,6 +15,8 @@ public class RouteDecisionDiagnosticsProducerIntegrationTest {
     private static final String[] DIAGNOSTIC_REASON_LABELS = {
             "rtslow", "rtfast", "ffast", "fslow"
     };
+    private static final String RICH_GRAMMAR_SEQUENCE = "srsrsrsrssrsssr";
+    private static final String RCONF_BUDGET_EDGE_SEQUENCE = "rsrssrsrsssrssrsrrssr";
 
     @Test
     public void emptyProducerDoesNotCreateStatsSection() {
@@ -103,6 +106,108 @@ public class RouteDecisionDiagnosticsProducerIntegrationTest {
         assertExactOmissionCount(producer, content);
     }
 
+    @Test
+    public void realProducerFixtureCoversEveryDetailGrammarFamily() {
+        RouteReleaseOutcomeStats stats = richGrammarStats();
+
+        String producer = stats.diagnostics();
+        String content = statsContent(snapshot(producer, false).format());
+
+        assertEquals(
+                "rel s/r/x rtslow 9/6/0 sup=1 rev37%@8 sig=mixed tr=2/4 cancel=4/0 "
+                        + "conf33%@6/mixed rtr=1/1 rcancel=1/0 rmat=usable rconf50%@2",
+                producer);
+        assertDetailToken(producer, "sup=1");
+        assertDetailToken(producer, "rev37%@8");
+        assertDetailToken(producer, "sig=mixed");
+        assertDetailToken(producer, "tr=2/4");
+        assertDetailToken(producer, "cancel=4/0");
+        assertDetailToken(producer, "conf33%@6/mixed");
+        assertDetailToken(producer, "rtr=1/1");
+        assertDetailToken(producer, "rcancel=1/0");
+        assertDetailToken(producer, "rmat=usable");
+        assertDetailToken(producer, "rconf50%@2");
+        assertTrue(content.length() <= RouteDecisionDiagnosticsSnapshot.RELEASE_STATS_CHAR_BUDGET);
+        assertExactOmissionCount(producer, content);
+    }
+
+    @Test
+    public void priorityCompactionKeepsRealSigRevConfAheadOfSecondaryDetails() {
+        RouteReleaseOutcomeStats stats = richGrammarStats();
+        stats.record("file-speedup", "stable");
+
+        String producer = stats.diagnostics();
+        String content = statsContent(snapshot(producer, false).format());
+
+        assertEquals(
+                "rel s/r/x rtslow 9/6/0 rev37%@8 sig=mixed conf33%@6/mixed "
+                        + "ffast 1/0/0 sig=learn …more+7",
+                content);
+        assertDetailToken(content, "sig=mixed");
+        assertDetailToken(content, "rev37%@8");
+        assertDetailToken(content, "conf33%@6/mixed");
+        assertFalse(content.contains("sup="));
+        assertFalse(content.contains("tr="));
+        assertFalse(content.contains("cancel="));
+        assertFalse(content.contains("rtr="));
+        assertFalse(content.contains("rcancel="));
+        assertFalse(content.contains("rmat="));
+        assertFalse(content.contains("rconf"));
+        assertExactOmissionCount(producer, content);
+    }
+
+    @Test
+    public void rconfPriorityUsesExactFinalCharacterBudgetSlot() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        recordDirectionalSequence(stats, "rt-slowdown", RCONF_BUDGET_EDGE_SEQUENCE);
+        stats.record("file-speedup", "stable");
+
+        String producer = stats.diagnostics();
+        String content = statsContent(snapshot(producer, false).format());
+
+        assertEquals(
+                "rel s/r/x rtslow 12/9/0 rev50%@8 sig=risk tr=2/6 cancel=6/0 "
+                        + "conf25%@8/weak rtr=0/2 rcancel=2/0 rmat=usable rconf0%@2 "
+                        + "ffast 1/0/0 sig=learn",
+                producer);
+        assertEquals(
+                "rel s/r/x rtslow 12/9/0 rev50%@8 sig=risk conf25%@8/weak rconf0%@2 "
+                        + "ffast 1/0/0 sig=learn …more+5",
+                content);
+        assertEquals(RouteDecisionDiagnosticsSnapshot.RELEASE_STATS_CHAR_BUDGET, content.length());
+        assertDetailToken(content, "sig=risk");
+        assertDetailToken(content, "rev50%@8");
+        assertDetailToken(content, "conf25%@8/weak");
+        assertDetailToken(content, "rconf0%@2");
+        assertFalse(content.contains("tr="));
+        assertFalse(content.contains("cancel="));
+        assertFalse(content.contains("rtr="));
+        assertFalse(content.contains("rcancel="));
+        assertFalse(content.contains("rmat="));
+        assertExactOmissionCount(producer, content);
+    }
+
+    private static RouteReleaseOutcomeStats richGrammarStats() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        recordDirectionalSequence(stats, "rt-slowdown", RICH_GRAMMAR_SEQUENCE);
+        stats.record("rt-slowdown", "superseded");
+        return stats;
+    }
+
+    private static void recordDirectionalSequence(
+            RouteReleaseOutcomeStats stats, String releaseReason, String sequence) {
+        for (int i = 0; i < sequence.length(); i++) {
+            char outcome = sequence.charAt(i);
+            if (outcome == 's') {
+                stats.record(releaseReason, "stable");
+            } else if (outcome == 'r') {
+                stats.record(releaseReason, "reversal");
+            } else {
+                throw new AssertionError("unknown fixture outcome: " + outcome);
+            }
+        }
+    }
+
     private static RouteDecisionDiagnosticsSnapshot snapshot(
             String releaseBreakdown, boolean pathologicalPressure) {
         if (!pathologicalPressure) {
@@ -148,6 +253,10 @@ public class RouteDecisionDiagnosticsProducerIntegrationTest {
         for (String label : DIAGNOSTIC_REASON_LABELS) {
             assertTrue("missing reason " + label + ": " + value, tokenCount(value, label) == 1);
         }
+    }
+
+    private static void assertDetailToken(String value, String expected) {
+        assertEquals("missing detail token " + expected + ": " + value, 1, tokenCount(value, expected));
     }
 
     private static void assertExactOmissionCount(String producer, String compacted) {
