@@ -39,7 +39,7 @@ public class RouteDecisionDiagnosticsSnapshotTest {
     }
 
     @Test
-    public void longReleaseStatsUseExplicitOmissionMarkerWithoutHidingLaterSections() {
+    public void longReleaseStatsCountOmittedTokensWithoutHidingLaterSections() {
         String releaseBreakdown = longReleaseBreakdown();
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 "switch-guard", 8, 8,
@@ -53,18 +53,18 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         assertEquals(
                 "route why=switch-guard n=8/8"
                         + " • stats{rel s/r/x rtslow 1/2/3 sup=4 rev50%@8 sig=risky tr=5/6"
-                        + " cancel=2/4 conf75%@8/strong rtr=3/2 …more}"
+                        + " cancel=2/4 conf75%@8/strong …more+9}"
                         + " • hist=rt>file stable×1/3"
                         + " • flap×1(+200ms)"
                         + " • lat gap=300ms need=900ms guard=off/1500ms",
                 formatted);
         String stats = statsContent(formatted);
-        assertTrue(stats.endsWith("…more"));
+        assertTrue(stats.endsWith("…more+9"));
         assertTrue(stats.length() <= RouteDecisionDiagnosticsSnapshot.RELEASE_STATS_CHAR_BUDGET);
     }
 
     @Test
-    public void totalBudgetShrinksStatsBeforeLaterRoutingSections() {
+    public void totalBudgetCountsOnlyTokensHiddenByDynamicStatsShrink() {
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 "switch-guard", 8, 8,
                 true, "rt-slowdown", "pending", 1, 3,
@@ -78,7 +78,7 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         assertTrue(formatted.contains(" • release=rt-slowdown:pending×1/3"));
         assertTrue(formatted.contains(" • stats{"));
         String stats = statsContent(formatted);
-        assertTrue(stats.endsWith("…more"));
+        assertTrue(stats.endsWith("…more+11"));
         assertTrue(stats.length() < RouteDecisionDiagnosticsSnapshot.RELEASE_STATS_CHAR_BUDGET);
         assertTrue(formatted.contains(" • hist=rt>file stable×1/3"));
         assertTrue(formatted.contains(" • flap×1(+200ms)"));
@@ -86,12 +86,12 @@ public class RouteDecisionDiagnosticsSnapshotTest {
     }
 
     @Test
-    public void pathologicalLabelsReserveMinimalStatsOmissionMarkerWithinHardBudget() {
+    public void pathologicalLabelsReserveTotalOmittedTokenCountWithinHardBudget() {
         String longLabel = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(8);
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 longLabel, Integer.MAX_VALUE, Integer.MAX_VALUE,
                 true, longLabel, longLabel, Integer.MAX_VALUE, Integer.MAX_VALUE,
-                longReleaseBreakdown() + longReleaseBreakdown(),
+                longReleaseBreakdown() + " " + longReleaseBreakdown(),
                 longLabel, Integer.MAX_VALUE,
                 Integer.MAX_VALUE, Long.MAX_VALUE,
                 true, Long.MAX_VALUE - 1L, Long.MAX_VALUE - 1L,
@@ -101,7 +101,7 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         assertTrue(formatted.length() <= RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET);
         assertTrue(formatted.startsWith("route why="));
         assertTrue(formatted.contains(" • release="));
-        assertTrue(formatted.contains(" • stats{…more}"));
+        assertTrue(formatted.contains(" • stats{…more+38}"));
         assertTrue(formatted.contains(" • hist="));
         assertTrue(formatted.contains(" • flap×"));
         assertTrue(formatted.contains(" • lat"));
