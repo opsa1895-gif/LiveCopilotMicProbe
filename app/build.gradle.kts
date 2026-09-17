@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 120
-        versionName = "1.19.0-omission-digit-boundary-hardening"
+        versionCode = 121
+        versionName = "1.20.0-producer-formatter-integration-contracts"
     }
 
     compileOptions {
