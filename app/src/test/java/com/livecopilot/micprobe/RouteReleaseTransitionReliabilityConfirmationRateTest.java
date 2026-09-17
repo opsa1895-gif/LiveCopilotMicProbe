@@ -50,6 +50,17 @@ public class RouteReleaseTransitionReliabilityConfirmationRateTest {
     }
 
     @Test
+    public void confirmedAndRevertedChangesFeedRecentRuntimeRate() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        add(stats, "rt-speedup", "srsrsrsrssrsssr");
+
+        assertEquals(1, stats.confirmedTransitionReliabilityChangeCount("rt-speedup"));
+        assertEquals(1, stats.revertedTransitionReliabilityChangeCount("rt-speedup"));
+        assertEquals(2, stats.reliabilityTransitionConfirmationRateSampleCount("rt-speedup"));
+        assertEquals(50, stats.reliabilityTransitionConfirmationRatePercent("rt-speedup"));
+    }
+
+    @Test
     public void negativeSyntheticCountsAreClampedForHelperSafety() {
         assertEquals(2, RouteReleaseOutcomeStats
                 .reliabilityTransitionConfirmationRateSampleCountForCounts(-3, 2));
