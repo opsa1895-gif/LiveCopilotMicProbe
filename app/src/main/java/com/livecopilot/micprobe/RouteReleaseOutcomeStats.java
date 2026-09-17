@@ -203,6 +203,13 @@ final class RouteReleaseOutcomeStats {
                 MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES);
     }
 
+    String reliabilityTransitionSampleMaturityLabel(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return "-";
+        return reliabilityTransitionSampleMaturityLabelForSamples(
+                recentReliabilityTransitionRates[reason].sampleCount());
+    }
+
     static int reliabilityTransitionConfirmationRateSampleCountForCounts(
             int confirmed, int reverted) {
         long samples = (long) Math.max(0, confirmed) + Math.max(0, reverted);
@@ -215,6 +222,17 @@ final class RouteReleaseOutcomeStats {
                 confirmed, reverted);
         if (samples < MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES) return -1;
         return (int) (((long) Math.max(0, confirmed) * 100L) / samples);
+    }
+
+    static String reliabilityTransitionSampleMaturityLabelForSamples(int samples) {
+        int safeSamples = Math.max(0, samples);
+        if (safeSamples < MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES) {
+            return "low";
+        }
+        if (safeSamples < RELIABILITY_TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES) {
+            return "usable";
+        }
+        return "mature";
     }
 
     static String transitionReliabilityCancellationReason(
@@ -317,6 +335,9 @@ final class RouteReleaseOutcomeStats {
                         }
                         int reliabilityTransitionSamples =
                                 recentReliabilityTransitionRates[reason].sampleCount();
+                        out.append(" rmat=")
+                                .append(reliabilityTransitionSampleMaturityLabelForSamples(
+                                        reliabilityTransitionSamples));
                         if (reliabilityTransitionSamples
                                 >= MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES) {
                             out.append(" rconf")
