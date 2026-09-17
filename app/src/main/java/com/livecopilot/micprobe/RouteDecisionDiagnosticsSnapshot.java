@@ -9,6 +9,9 @@ final class RouteDecisionDiagnosticsSnapshot {
     private static final String[] STATS_REASON_LABELS = {
             "rtslow", "rtfast", "ffast", "fslow"
     };
+    private static final String[] STATS_DETAIL_PRIORITY_PREFIXES = {
+            "sig=", "rev", "conf", "rconf"
+    };
     private static final int STATS_MIN_VISIBLE_PREFIX_CHARS = 24;
     private static final int CORE_OVERFLOW_BUDGET = 52;
     private static final int RELEASE_OVERFLOW_BUDGET = 44;
@@ -186,22 +189,129 @@ final class RouteDecisionDiagnosticsSnapshot {
     private static String reasonAwareStatsContent(String value, int charBudget) {
         String[] tokens = diagnosticTokens(value);
         if (uniqueReasonCount(tokens) < 2) return null;
-        int totalTokens = tokens.length;
 
-        String pairsWithHeader = reasonSummary(tokens, true, true);
-        String candidate = summaryWithOmission(pairsWithHeader, totalTokens, charBudget);
+        String candidate = prioritizedReasonSummary(
+                tokens, true, true, true, charBudget);
         if (candidate != null) return candidate;
 
-        String labelsWithHeader = reasonSummary(tokens, true, false);
-        candidate = summaryWithOmission(labelsWithHeader, totalTokens, charBudget);
+        candidate = prioritizedReasonSummary(
+                tokens, true, false, false, charBudget);
         if (candidate != null) return candidate;
 
         String labelsOnly = reasonSummary(tokens, false, false);
-        candidate = summaryWithOmission(labelsOnly, totalTokens, charBudget);
+        candidate = summaryWithOmission(labelsOnly, tokens.length, charBudget);
         if (candidate != null) return candidate;
 
-        String marker = omissionMarker(totalTokens);
+        String marker = omissionMarker(tokens.length);
         return marker.length() <= charBudget ? marker : null;
+    }
+
+    private static String prioritizedReasonSummary(
+            String[] tokens,
+            boolean includeHeader,
+            boolean includeCounts,
+            boolean includeSecondaryDetails,
+            int charBudget) {
+        boolean[] selected = reasonBaseSelection(tokens, includeHeader, includeCounts);
+        String best = selectedSummaryWithOmission(tokens, selected, charBudget);
+        if (best == null) return null;
+
+        boolean[] attemptedPriority = new boolean[tokens.length];
+        for (String prefix : STATS_DETAIL_PRIORITY_PREFIXES) {
+            for (int i = 0; i < tokens.length; i++) {
+                if (!isOptionalReasonDetail(tokens, i, selected, includeCounts)
+                        || attemptedPriority[i]
+                        || !tokens[i].startsWith(prefix)) {
+                    continue;
+                }
+                attemptedPriority[i] = true;
+                selected[i] = true;
+                String expanded = selectedSummaryWithOmission(tokens, selected, charBudget);
+                if (expanded != null) {
+                    best = expanded;
+                } else {
+                    selected[i] = false;
+                }
+            }
+        }
+
+        if (!includeSecondaryDetails) return best;
+        for (int i = 0; i < tokens.length; i++) {
+            if (attemptedPriority[i]
+                    || !isOptionalReasonDetail(tokens, i, selected, includeCounts)) {
+                continue;
+            }
+            selected[i] = true;
+            String expanded = selectedSummaryWithOmission(tokens, selected, charBudget);
+            if (expanded != null) {
+                best = expanded;
+            } else {
+                selected[i] = false;
+            }
+        }
+        return best;
+    }
+
+    private static boolean[] reasonBaseSelection(
+            String[] tokens, boolean includeHeader, boolean includeCounts) {
+        boolean[] selected = new boolean[tokens.length];
+        if (includeHeader && tokens.length >= 2
+                && "rel".equals(tokens[0]) && "s/r/x".equals(tokens[1])) {
+            selected[0] = true;
+            selected[1] = true;
+        }
+
+        boolean[] seen = new boolean[STATS_REASON_LABELS.length];
+        for (int i = 0; i < tokens.length; i++) {
+            int reason = statsReasonIndex(tokens[i]);
+            if (reason < 0 || seen[reason]) continue;
+            seen[reason] = true;
+            selected[i] = true;
+            if (includeCounts && i + 1 < tokens.length
+                    && statsReasonIndex(tokens[i + 1]) < 0) {
+                selected[i + 1] = true;
+            }
+        }
+        return selected;
+    }
+
+    private static String selectedSummaryWithOmission(
+            String[] tokens, boolean[] selected, int charBudget) {
+        StringBuilder out = new StringBuilder();
+        int visibleTokens = 0;
+        for (int i = 0; i < tokens.length; i++) {
+            if (!selected[i]) continue;
+            appendToken(out, tokens[i]);
+            visibleTokens++;
+        }
+        int omittedTokens = Math.max(0, tokens.length - visibleTokens);
+        if (omittedTokens > 0) {
+            appendToken(out, omissionMarker(omittedTokens));
+        }
+        return out.length() <= charBudget ? out.toString() : null;
+    }
+
+    private static boolean isOptionalReasonDetail(
+            String[] tokens, int index, boolean[] selected, boolean includeCounts) {
+        if (index < 0 || index >= tokens.length || selected[index]) return false;
+        if (index < 2 && ("rel".equals(tokens[index]) || "s/r/x".equals(tokens[index]))) {
+            return false;
+        }
+        if (statsReasonIndex(tokens[index]) >= 0) return false;
+        if (!includeCounts && isReasonCountToken(tokens, index)) return false;
+        return reasonBefore(tokens, index) >= 0;
+    }
+
+    private static boolean isReasonCountToken(String[] tokens, int index) {
+        return index > 0 && statsReasonIndex(tokens[index - 1]) >= 0;
+    }
+
+    private static int reasonBefore(String[] tokens, int index) {
+        for (int i = index - 1; i >= 0; i--) {
+            int reason = statsReasonIndex(tokens[i]);
+            if (reason >= 0) return reason;
+        }
+        return -1;
     }
 
     private static String omittedStatsSection(String value) {
