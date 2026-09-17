@@ -63,6 +63,17 @@ public class RealtimeRoutingRegimeReleaseOutcomePolicyTest {
     }
 
     @Test
+    public void onlyPendingReleaseBecomesSupersededWhenReplaced() {
+        assertEquals("superseded",
+                RealtimeRoutingPolicy.routeFlapReleaseReplacementOutcome("pending"));
+        assertEquals("-", RealtimeRoutingPolicy.routeFlapReleaseReplacementOutcome("stable"));
+        assertEquals("-", RealtimeRoutingPolicy.routeFlapReleaseReplacementOutcome("reversal"));
+        assertEquals("-", RealtimeRoutingPolicy.routeFlapReleaseReplacementOutcome("expired"));
+        assertEquals("-", RealtimeRoutingPolicy.routeFlapReleaseReplacementOutcome("-"));
+        assertEquals("-", RealtimeRoutingPolicy.routeFlapReleaseReplacementOutcome(null));
+    }
+
+    @Test
     public void unknownReleaseTargetDoesNotCreateOutcome() {
         assertEquals("-", RealtimeRoutingPolicy.routeFlapReleaseOutcome(
                 RealtimeRoutingPolicy.ROUTE_PERFORMANCE_ROUTE_UNKNOWN,

@@ -24,6 +24,27 @@ public class RouteReleaseOutcomeStatsTest {
     }
 
     @Test
+    public void supersededReleaseIsCountedButExcludedFromDirectionalRates() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        stats.record("rt-slowdown", "stable");
+        stats.record("rt-slowdown", "reversal");
+        stats.record("rt-slowdown", "superseded");
+        stats.record("rt-slowdown", "superseded");
+
+        assertEquals(2, stats.count("rt-slowdown", "superseded"));
+        assertEquals(2, stats.reversalRateSampleCount("rt-slowdown"));
+        assertEquals(-1, stats.reversalRatePercent("rt-slowdown"));
+        assertEquals("learn", stats.reversalSignalLabel("rt-slowdown"));
+        assertEquals(
+                "rel s/r/x rtslow 1/1/0 sup=2 sig=learn",
+                stats.diagnostics());
+
+        stats.clear();
+        assertEquals(0, stats.count("rt-slowdown", "superseded"));
+        assertTrue(stats.isEmpty());
+    }
+
+    @Test
     public void pendingAndUnknownSignalsDoNotPolluteCompletedOutcomeCounts() {
         RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
         stats.record("rt-slowdown", "pending");
