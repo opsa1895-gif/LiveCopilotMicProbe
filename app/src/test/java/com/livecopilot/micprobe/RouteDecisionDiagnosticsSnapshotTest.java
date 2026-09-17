@@ -3,7 +3,6 @@ package com.livecopilot.micprobe;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class RouteDecisionDiagnosticsSnapshotTest {
@@ -40,7 +39,7 @@ public class RouteDecisionDiagnosticsSnapshotTest {
     }
 
     @Test
-    public void longReleaseStatsAreBoundedAtTokenBoundaryWithoutHidingLaterSections() {
+    public void longReleaseStatsUseExplicitOmissionMarkerWithoutHidingLaterSections() {
         String releaseBreakdown = longReleaseBreakdown();
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 "switch-guard", 8, 8,
@@ -54,12 +53,13 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         assertEquals(
                 "route why=switch-guard n=8/8"
                         + " • stats{rel s/r/x rtslow 1/2/3 sup=4 rev50%@8 sig=risky tr=5/6"
-                        + " cancel=2/4 conf75%@8/strong rtr=3/2…}"
+                        + " cancel=2/4 conf75%@8/strong rtr=3/2 …more}"
                         + " • hist=rt>file stable×1/3"
                         + " • flap×1(+200ms)"
                         + " • lat gap=300ms need=900ms guard=off/1500ms",
                 formatted);
         String stats = statsContent(formatted);
+        assertTrue(stats.endsWith("…more"));
         assertTrue(stats.length() <= RouteDecisionDiagnosticsSnapshot.RELEASE_STATS_CHAR_BUDGET);
     }
 
@@ -78,7 +78,7 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         assertTrue(formatted.contains(" • release=rt-slowdown:pending×1/3"));
         assertTrue(formatted.contains(" • stats{"));
         String stats = statsContent(formatted);
-        assertTrue(stats.endsWith("…"));
+        assertTrue(stats.endsWith("…more"));
         assertTrue(stats.length() < RouteDecisionDiagnosticsSnapshot.RELEASE_STATS_CHAR_BUDGET);
         assertTrue(formatted.contains(" • hist=rt>file stable×1/3"));
         assertTrue(formatted.contains(" • flap×1(+200ms)"));
@@ -86,7 +86,7 @@ public class RouteDecisionDiagnosticsSnapshotTest {
     }
 
     @Test
-    public void pathologicalLabelsStayWithinHardBudgetAndKeepSectionSignals() {
+    public void pathologicalLabelsReserveMinimalStatsOmissionMarkerWithinHardBudget() {
         String longLabel = "abcdefghijklmnopqrstuvwxyz0123456789".repeat(8);
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 longLabel, Integer.MAX_VALUE, Integer.MAX_VALUE,
@@ -101,11 +101,11 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         assertTrue(formatted.length() <= RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET);
         assertTrue(formatted.startsWith("route why="));
         assertTrue(formatted.contains(" • release="));
+        assertTrue(formatted.contains(" • stats{…more}"));
         assertTrue(formatted.contains(" • hist="));
         assertTrue(formatted.contains(" • flap×"));
         assertTrue(formatted.contains(" • lat"));
         assertTrue(formatted.contains("guard="));
-        assertFalse(formatted.contains("stats{"));
     }
 
     @Test
