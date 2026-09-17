@@ -11,6 +11,7 @@ final class RouteReleaseOutcomeStats {
     static final int STRONG_TRANSITION_CONFIRMATION_RATE_MIN_PERCENT = 75;
     static final int WEAK_TRANSITION_CONFIRMATION_RATE_MAX_PERCENT = 25;
     static final int RELIABILITY_CHANGE_CONFIRM_RESOLUTIONS = 2;
+    static final int MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES = 2;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -179,6 +180,36 @@ final class RouteReleaseOutcomeStats {
         return supersededTransitionReliabilityChanges[reason];
     }
 
+    int reliabilityTransitionConfirmationRateSampleCount(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return 0;
+        return reliabilityTransitionConfirmationRateSampleCountForCounts(
+                confirmedTransitionReliabilityChanges[reason],
+                revertedTransitionReliabilityChanges[reason]);
+    }
+
+    int reliabilityTransitionConfirmationRatePercent(String releaseReason) {
+        int reason = reasonIndex(releaseReason);
+        if (reason < 0) return -1;
+        return reliabilityTransitionConfirmationRatePercentForCounts(
+                confirmedTransitionReliabilityChanges[reason],
+                revertedTransitionReliabilityChanges[reason]);
+    }
+
+    static int reliabilityTransitionConfirmationRateSampleCountForCounts(
+            int confirmed, int reverted) {
+        long samples = (long) Math.max(0, confirmed) + Math.max(0, reverted);
+        return samples >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) samples;
+    }
+
+    static int reliabilityTransitionConfirmationRatePercentForCounts(
+            int confirmed, int reverted) {
+        int samples = reliabilityTransitionConfirmationRateSampleCountForCounts(
+                confirmed, reverted);
+        if (samples < MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES) return -1;
+        return (int) (((long) Math.max(0, confirmed) * 100L) / samples);
+    }
+
     static String transitionReliabilityCancellationReason(
             String latchedLabel, String candidateLabel, String rawLabel) {
         if (latchedLabel == null || candidateLabel == null || rawLabel == null) return "-";
@@ -275,6 +306,18 @@ final class RouteReleaseOutcomeStats {
                         if (canceledTransitionReliabilityChanges[reason] > 0) {
                             out.append(" rcancel=").append(revertedTransitionReliabilityChanges[reason])
                                     .append('/').append(supersededTransitionReliabilityChanges[reason]);
+                        }
+                        int reliabilityTransitionSamples =
+                                reliabilityTransitionConfirmationRateSampleCountForCounts(
+                                        confirmedTransitionReliabilityChanges[reason],
+                                        revertedTransitionReliabilityChanges[reason]);
+                        if (reliabilityTransitionSamples
+                                >= MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES) {
+                            out.append(" rconf")
+                                    .append(reliabilityTransitionConfirmationRatePercentForCounts(
+                                            confirmedTransitionReliabilityChanges[reason],
+                                            revertedTransitionReliabilityChanges[reason]))
+                                    .append("%@").append(reliabilityTransitionSamples);
                         }
                     }
                 }
