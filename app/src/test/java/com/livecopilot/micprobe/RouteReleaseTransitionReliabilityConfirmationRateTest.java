@@ -3,6 +3,7 @@ package com.livecopilot.micprobe;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 public class RouteReleaseTransitionReliabilityConfirmationRateTest {
     @Test
@@ -58,6 +59,37 @@ public class RouteReleaseTransitionReliabilityConfirmationRateTest {
         assertEquals(1, stats.revertedTransitionReliabilityChangeCount("rt-speedup"));
         assertEquals(2, stats.reliabilityTransitionConfirmationRateSampleCount("rt-speedup"));
         assertEquals(50, stats.reliabilityTransitionConfirmationRatePercent("rt-speedup"));
+    }
+
+    @Test
+    public void sampleMaturityTracksRateReadinessAndFullWindow() {
+        assertEquals("low", RouteReleaseOutcomeStats
+                .reliabilityTransitionSampleMaturityLabelForSamples(-3));
+        assertEquals("low", RouteReleaseOutcomeStats
+                .reliabilityTransitionSampleMaturityLabelForSamples(0));
+        assertEquals("low", RouteReleaseOutcomeStats
+                .reliabilityTransitionSampleMaturityLabelForSamples(1));
+        assertEquals("usable", RouteReleaseOutcomeStats
+                .reliabilityTransitionSampleMaturityLabelForSamples(2));
+        assertEquals("usable", RouteReleaseOutcomeStats
+                .reliabilityTransitionSampleMaturityLabelForSamples(7));
+        assertEquals("mature", RouteReleaseOutcomeStats
+                .reliabilityTransitionSampleMaturityLabelForSamples(8));
+        assertEquals("mature", RouteReleaseOutcomeStats
+                .reliabilityTransitionSampleMaturityLabelForSamples(99));
+    }
+
+    @Test
+    public void runtimeMaturityIsExposedAlongsideRecentRate() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        add(stats, "rt-speedup", "srsrsrsrssrsssr");
+
+        assertEquals("usable", stats.reliabilityTransitionSampleMaturityLabel("rt-speedup"));
+        assertEquals("-", stats.reliabilityTransitionSampleMaturityLabel("unknown"));
+        assertTrue(stats.diagnostics().contains("rmat=usable rconf50%@2"));
+
+        stats.clear();
+        assertEquals("low", stats.reliabilityTransitionSampleMaturityLabel("rt-speedup"));
     }
 
     @Test
