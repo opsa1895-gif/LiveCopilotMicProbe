@@ -20,6 +20,20 @@ final class RouteDecisionDiagnosticsSnapshot {
     private static final int LATENCY_OVERFLOW_BUDGET = 80;
     private static final int BASE_STATS_OVERFLOW_RESERVE = 15;
 
+    private static final class AdaptiveStatsCandidate {
+        final String text;
+        final int reasonCoverage;
+        final int baseRank;
+        final int charLength;
+
+        AdaptiveStatsCandidate(String text, int reasonCoverage, int baseRank) {
+            this.text = text;
+            this.reasonCoverage = reasonCoverage;
+            this.baseRank = baseRank;
+            this.charLength = text.length();
+        }
+    }
+
     private final String decisionReason;
     private final int realtimeSamples;
     private final int fileSamples;
@@ -202,6 +216,9 @@ final class RouteDecisionDiagnosticsSnapshot {
                 tokens, false, false, false, charBudget);
         if (candidate != null) return candidate;
 
+        candidate = adaptivePartialReasonSummary(tokens, charBudget);
+        if (candidate != null) return candidate;
+
         String labelsWithHeader = reasonSummary(tokens, true, false);
         candidate = summaryWithOmission(labelsWithHeader, tokens.length, charBudget);
         if (candidate != null) return candidate;
@@ -278,20 +295,136 @@ final class RouteDecisionDiagnosticsSnapshot {
         return best;
     }
 
+    private static String adaptivePartialReasonSummary(String[] tokens, int charBudget) {
+        AdaptiveStatsCandidate best = null;
+        best = betterAdaptiveCandidate(best,
+                adaptivePartialCandidate(tokens, true, true, charBudget, 3));
+        best = betterAdaptiveCandidate(best,
+                adaptivePartialCandidate(tokens, true, false, charBudget, 2));
+        best = betterAdaptiveCandidate(best,
+                adaptivePartialCandidate(tokens, false, false, charBudget, 1));
+        return best == null ? null : best.text;
+    }
+
+    private static AdaptiveStatsCandidate adaptivePartialCandidate(
+            String[] tokens,
+            boolean includeHeader,
+            boolean includeCounts,
+            int charBudget,
+            int baseRank) {
+        boolean[] selected = reasonBaseSelection(tokens, includeHeader, includeCounts);
+        if (selectedSummaryWithOmission(tokens, selected, charBudget) == null) return null;
+
+        int[] round = adaptivePriorityRound(tokens, selected, includeCounts);
+        int candidateCount = 0;
+        for (int index : round) {
+            if (index >= 0) candidateCount++;
+        }
+        if (candidateCount == 0) return null;
+
+        int[] candidateIndices = new int[candidateCount];
+        int cursor = 0;
+        for (int index : round) {
+            if (index >= 0) candidateIndices[cursor++] = index;
+        }
+
+        String bestText = null;
+        int bestCoverage = 0;
+        int bestMask = Integer.MAX_VALUE;
+        for (int mask = 1; mask < (1 << candidateCount); mask++) {
+            for (int bit = 0; bit < candidateCount; bit++) {
+                if ((mask & (1 << bit)) != 0) {
+                    selected[candidateIndices[bit]] = true;
+                }
+            }
+
+            String rendered = selectedSummaryWithOmission(tokens, selected, charBudget);
+            int coverage = Integer.bitCount(mask);
+            if (rendered != null
+                    && (coverage > bestCoverage
+                    || (coverage == bestCoverage
+                    && (bestText == null || rendered.length() < bestText.length()))
+                    || (coverage == bestCoverage && bestText != null
+                    && rendered.length() == bestText.length() && mask < bestMask))) {
+                bestText = rendered;
+                bestCoverage = coverage;
+                bestMask = mask;
+            }
+
+            for (int bit = 0; bit < candidateCount; bit++) {
+                if ((mask & (1 << bit)) != 0) {
+                    selected[candidateIndices[bit]] = false;
+                }
+            }
+        }
+
+        if (bestText == null || bestCoverage == 0) return null;
+        return new AdaptiveStatsCandidate(bestText, bestCoverage, baseRank);
+    }
+
+    private static int[] adaptivePriorityRound(
+            String[] tokens, boolean[] selected, boolean includeCounts) {
+        for (String prefix : STATS_DETAIL_PRIORITY_PREFIXES) {
+            int[] round = emptyReasonRound();
+            boolean hasCandidate = false;
+            for (int reason = 0; reason < round.length; reason++) {
+                round[reason] = nextPriorityDetailIndexForPrefix(
+                        tokens, selected, includeCounts, reason, prefix);
+                if (round[reason] >= 0) hasCandidate = true;
+            }
+            if (hasCandidate) return round;
+        }
+        return emptyReasonRound();
+    }
+
+    private static int[] emptyReasonRound() {
+        int[] round = new int[STATS_REASON_LABELS.length];
+        for (int i = 0; i < round.length; i++) round[i] = -1;
+        return round;
+    }
+
+    private static AdaptiveStatsCandidate betterAdaptiveCandidate(
+            AdaptiveStatsCandidate current, AdaptiveStatsCandidate candidate) {
+        if (candidate == null) return current;
+        if (current == null) return candidate;
+        if (candidate.reasonCoverage != current.reasonCoverage) {
+            return candidate.reasonCoverage > current.reasonCoverage ? candidate : current;
+        }
+        if (candidate.baseRank != current.baseRank) {
+            return candidate.baseRank > current.baseRank ? candidate : current;
+        }
+        if (candidate.charLength != current.charLength) {
+            return candidate.charLength < current.charLength ? candidate : current;
+        }
+        return candidate.text.compareTo(current.text) < 0 ? candidate : current;
+    }
+
     private static int nextPriorityDetailIndex(
             String[] tokens,
             boolean[] selected,
             boolean includeCounts,
             int reason) {
         for (String prefix : STATS_DETAIL_PRIORITY_PREFIXES) {
-            for (int i = 0; i < tokens.length; i++) {
-                if (reasonBefore(tokens, i) != reason
-                        || !isOptionalReasonDetail(tokens, i, selected, includeCounts)
-                        || !tokens[i].startsWith(prefix)) {
-                    continue;
-                }
-                return i;
+            int index = nextPriorityDetailIndexForPrefix(
+                    tokens, selected, includeCounts, reason, prefix);
+            if (index >= 0) return index;
+        }
+        return -1;
+    }
+
+    private static int nextPriorityDetailIndexForPrefix(
+            String[] tokens,
+            boolean[] selected,
+            boolean includeCounts,
+            int reason,
+            String prefix) {
+        for (int i = 0; i < tokens.length; i++) {
+            if (reasonBefore(tokens, i) != reason
+                    || !isOptionalReasonDetail(tokens, i, selected, includeCounts)
+                    || !tokens[i].startsWith(prefix)) {
+                continue;
             }
+            return i;
         }
         return -1;
     }

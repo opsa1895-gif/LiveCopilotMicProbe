@@ -86,7 +86,7 @@ public class RouteDecisionDiagnosticsSnapshotTest {
     }
 
     @Test
-    public void multiReasonStatsPreferFairSignalCoverageOverPartialCountRichCoverage() {
+    public void multiReasonStatsPreferFullFairSignalCoverageWhenItFits() {
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 "switch-guard", 8, 8,
                 false, "-", "-", 0, 3,
@@ -102,7 +102,7 @@ public class RouteDecisionDiagnosticsSnapshotTest {
     }
 
     @Test
-    public void dynamicBudgetFallsBackToAllReasonLabelsInsteadOfPartialSignals() {
+    public void dynamicBudgetSelectsLargestCompactSignalSubset() {
         RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
                 "switch-guard", 8, 8,
                 true, "rt-slowdown", "pending", 1, 3,
@@ -114,12 +114,27 @@ public class RouteDecisionDiagnosticsSnapshotTest {
         String formatted = snapshot.format();
         assertTrue(formatted.length() <= RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET);
         assertEquals(
-                "rel s/r/x rtslow rtfast ffast fslow …more+19",
+                "rtslow sig=risky rtfast sig=stable ffast sig=learn fslow …more+18",
                 statsContent(formatted));
-        assertTrue(!statsContent(formatted).contains("sig="));
+        assertTrue(!statsContent(formatted).contains("rev50%@8"));
         assertTrue(formatted.contains(" • hist=rt>file stable×1/3"));
         assertTrue(formatted.contains(" • flap×1(+200ms)"));
         assertTrue(formatted.contains("guard=off/1500ms"));
+    }
+
+    @Test
+    public void adaptiveFallbackPrefersShortLaterSignalsOverLongEarlySignal() {
+        RouteDecisionDiagnosticsSnapshot snapshot = new RouteDecisionDiagnosticsSnapshot(
+                "switch-guard", 8, 8,
+                true, "rt-slowdown", "pending", 1, 3,
+                sizeSkewedMultiReasonBreakdown(),
+                "rt>file", 1,
+                1, 200L,
+                true, 300L, 900L, 0L, 1_500L);
+
+        assertEquals(
+                "rel s/r/x rtslow rtfast sig=a ffast sig=b fslow sig=c …more+5",
+                statsContent(snapshot.format()));
     }
 
     @Test
@@ -204,6 +219,13 @@ public class RouteDecisionDiagnosticsSnapshotTest {
                 + " rtfast 7/8/9 sup=10 rev25%@8 sig=stable"
                 + " ffast 2/0/1 sig=learn"
                 + " fslow 3/1/0 sig=stable";
+    }
+
+    private static String sizeSkewedMultiReasonBreakdown() {
+        return "rel s/r/x rtslow 1/1/0 sig=signal-value-that-is-deliberately-much-longer"
+                + " rtfast 2/2/0 sig=a"
+                + " ffast 3/3/0 sig=b"
+                + " fslow 4/4/0 sig=c";
     }
 
     private static String statsContent(String formatted) {
