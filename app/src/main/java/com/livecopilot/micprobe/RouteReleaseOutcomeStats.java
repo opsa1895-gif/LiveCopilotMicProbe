@@ -23,7 +23,8 @@ final class RouteReleaseOutcomeStats {
     private static final int OUTCOME_STABLE = 0;
     private static final int OUTCOME_REVERSAL = 1;
     private static final int OUTCOME_EXPIRED = 2;
-    private static final int OUTCOME_COUNT = 3;
+    private static final int OUTCOME_SUPERSEDED = 3;
+    private static final int OUTCOME_COUNT = 4;
 
     private static final int TRANSITION_REVERTED = 0;
     private static final int TRANSITION_CONFIRMED = 1;
@@ -296,6 +297,9 @@ final class RouteReleaseOutcomeStats {
                     .append(counts[reason][OUTCOME_STABLE]).append('/')
                     .append(counts[reason][OUTCOME_REVERSAL]).append('/')
                     .append(counts[reason][OUTCOME_EXPIRED]);
+            if (counts[reason][OUTCOME_SUPERSEDED] > 0) {
+                out.append(" sup=").append(counts[reason][OUTCOME_SUPERSEDED]);
+            }
             int directionalSamples = recentDirectionalSize[reason];
             if (directionalSamples >= MIN_REVERSAL_RATE_SAMPLES) {
                 out.append(" rev").append(reversalRatePercent(reason)).append("%@")
@@ -579,7 +583,8 @@ final class RouteReleaseOutcomeStats {
     private int reasonTotal(int reason) {
         long total = (long) counts[reason][OUTCOME_STABLE]
                 + counts[reason][OUTCOME_REVERSAL]
-                + counts[reason][OUTCOME_EXPIRED];
+                + counts[reason][OUTCOME_EXPIRED]
+                + counts[reason][OUTCOME_SUPERSEDED];
         return (int) Math.min(Integer.MAX_VALUE, total);
     }
 
@@ -603,6 +608,7 @@ final class RouteReleaseOutcomeStats {
         if ("stable".equals(outcome)) return OUTCOME_STABLE;
         if ("reversal".equals(outcome)) return OUTCOME_REVERSAL;
         if ("expired".equals(outcome)) return OUTCOME_EXPIRED;
+        if ("superseded".equals(outcome)) return OUTCOME_SUPERSEDED;
         return -1;
     }
 }

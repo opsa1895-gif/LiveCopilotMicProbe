@@ -427,6 +427,10 @@ final class RealtimeRoutingPolicy {
         return nextStableStreak >= ROUTE_FLAP_STABLE_CONFIRM_TURNS ? "stable" : "pending";
     }
 
+    static String routeFlapReleaseReplacementOutcome(String currentOutcome) {
+        return "pending".equals(currentOutcome) ? "superseded" : "-";
+    }
+
     static boolean isRouteFlapReversal(
             int previousDistinctRoute, int currentRoute, int nextRoute) {
         boolean previousKnown = previousDistinctRoute == ROUTE_PERFORMANCE_ROUTE_REALTIME

@@ -499,6 +499,11 @@ final class RealtimeTranscriptionClient {
                 fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs,
                 fileRouteLatencySamples, fileRouteLatencySampleAtMs, nowMs);
         if ("-".equals(releaseReason)) return;
+        String replacementOutcome = RealtimeRoutingPolicy.routeFlapReleaseReplacementOutcome(
+                lastRouteFlapReleaseOutcome);
+        if (!"-".equals(replacementOutcome)) {
+            routeFlapReleaseOutcomeStats.record(lastRouteFlapReleaseReason, replacementOutcome);
+        }
         lastRouteFlapReleaseReason = releaseReason;
         lastRouteFlapReleaseAtMs = nowMs;
         lastRouteFlapReleaseTarget = RealtimeRoutingPolicy.routeFlapReleaseTargetRoute(releaseReason);
