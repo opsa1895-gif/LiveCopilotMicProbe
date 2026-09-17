@@ -6,6 +6,9 @@ final class RouteDecisionDiagnosticsSnapshot {
 
     private static final String STATS_SECTION_PREFIX = " • stats{";
     private static final String STATS_OMISSION_MARKER = "…more";
+    private static final String[] STATS_REASON_LABELS = {
+            "rtslow", "rtfast", "ffast", "fslow"
+    };
     private static final int STATS_MIN_VISIBLE_PREFIX_CHARS = 24;
     private static final int CORE_OVERFLOW_BUDGET = 52;
     private static final int RELEASE_OVERFLOW_BUDGET = 44;
@@ -160,6 +163,9 @@ final class RouteDecisionDiagnosticsSnapshot {
         if (!hasReleaseBreakdown(value) || charBudget <= 0) return "";
         if (value.length() <= charBudget) return value;
 
+        String reasonAware = reasonAwareStatsContent(value, charBudget);
+        if (reasonAware != null) return reasonAware;
+
         int totalTokens = diagnosticTokenCount(value);
         String widestMarker = omissionMarker(totalTokens);
         int suffixLength = widestMarker.length() + 1;
@@ -177,8 +183,105 @@ final class RouteDecisionDiagnosticsSnapshot {
         return visiblePrefix + ' ' + omissionMarker(omittedTokens);
     }
 
+    private static String reasonAwareStatsContent(String value, int charBudget) {
+        String[] tokens = diagnosticTokens(value);
+        if (uniqueReasonCount(tokens) < 2) return null;
+        int totalTokens = tokens.length;
+
+        String pairsWithHeader = reasonSummary(tokens, true, true);
+        String candidate = summaryWithOmission(pairsWithHeader, totalTokens, charBudget);
+        if (candidate != null) return candidate;
+
+        String labelsWithHeader = reasonSummary(tokens, true, false);
+        candidate = summaryWithOmission(labelsWithHeader, totalTokens, charBudget);
+        if (candidate != null) return candidate;
+
+        String labelsOnly = reasonSummary(tokens, false, false);
+        candidate = summaryWithOmission(labelsOnly, totalTokens, charBudget);
+        if (candidate != null) return candidate;
+
+        String marker = omissionMarker(totalTokens);
+        return marker.length() <= charBudget ? marker : null;
+    }
+
     private static String omittedStatsSection(String value) {
-        return STATS_SECTION_PREFIX + omissionMarker(diagnosticTokenCount(value)) + '}';
+        String[] tokens = diagnosticTokens(value);
+        String labelsOnly = reasonSummary(tokens, false, false);
+        String content = summaryWithOmission(labelsOnly, tokens.length, Integer.MAX_VALUE);
+        if (content == null || content.isEmpty()) {
+            content = omissionMarker(tokens.length);
+        }
+        return STATS_SECTION_PREFIX + content + '}';
+    }
+
+    private static String summaryWithOmission(
+            String summary, int totalTokens, int charBudget) {
+        if (summary == null || summary.isEmpty()) return null;
+        int visibleTokens = diagnosticTokenCount(summary);
+        int omittedTokens = Math.max(0, totalTokens - visibleTokens);
+        if (omittedTokens == 0) {
+            return summary.length() <= charBudget ? summary : null;
+        }
+        String candidate = summary + ' ' + omissionMarker(omittedTokens);
+        return candidate.length() <= charBudget ? candidate : null;
+    }
+
+    private static String reasonSummary(
+            String[] tokens, boolean includeHeader, boolean includeCounts) {
+        if (tokens == null || tokens.length == 0) return "";
+        StringBuilder out = new StringBuilder();
+        if (includeHeader && tokens.length >= 2
+                && "rel".equals(tokens[0]) && "s/r/x".equals(tokens[1])) {
+            appendToken(out, tokens[0]);
+            appendToken(out, tokens[1]);
+        }
+
+        boolean[] seen = new boolean[STATS_REASON_LABELS.length];
+        for (int i = 0; i < tokens.length; i++) {
+            int reason = statsReasonIndex(tokens[i]);
+            if (reason < 0 || seen[reason]) continue;
+            seen[reason] = true;
+            appendToken(out, tokens[i]);
+            if (includeCounts && i + 1 < tokens.length
+                    && statsReasonIndex(tokens[i + 1]) < 0) {
+                appendToken(out, tokens[i + 1]);
+            }
+        }
+        return out.toString();
+    }
+
+    private static int uniqueReasonCount(String[] tokens) {
+        if (tokens == null || tokens.length == 0) return 0;
+        boolean[] seen = new boolean[STATS_REASON_LABELS.length];
+        int count = 0;
+        for (String token : tokens) {
+            int reason = statsReasonIndex(token);
+            if (reason >= 0 && !seen[reason]) {
+                seen[reason] = true;
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static int statsReasonIndex(String token) {
+        if (token == null) return -1;
+        for (int i = 0; i < STATS_REASON_LABELS.length; i++) {
+            if (STATS_REASON_LABELS[i].equals(token)) return i;
+        }
+        return -1;
+    }
+
+    private static String[] diagnosticTokens(String value) {
+        if (!hasReleaseBreakdown(value)) return new String[0];
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) return new String[0];
+        return trimmed.split("\\s+");
+    }
+
+    private static void appendToken(StringBuilder out, String token) {
+        if (out.length() > 0) out.append(' ');
+        out.append(token);
     }
 
     private static String omissionMarker(int omittedTokens) {
