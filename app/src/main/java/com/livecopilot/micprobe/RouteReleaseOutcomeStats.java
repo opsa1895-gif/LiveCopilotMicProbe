@@ -12,6 +12,7 @@ final class RouteReleaseOutcomeStats {
     static final int WEAK_TRANSITION_CONFIRMATION_RATE_MAX_PERCENT = 25;
     static final int RELIABILITY_CHANGE_CONFIRM_RESOLUTIONS = 2;
     static final int MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES = 2;
+    static final int RELIABILITY_TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES = 8;
 
     private static final int REASON_RT_SLOWDOWN = 0;
     private static final int REASON_RT_SPEEDUP = 1;
@@ -52,6 +53,15 @@ final class RouteReleaseOutcomeStats {
     private final int[] canceledTransitionReliabilityChanges = new int[REASON_COUNT];
     private final int[] revertedTransitionReliabilityChanges = new int[REASON_COUNT];
     private final int[] supersededTransitionReliabilityChanges = new int[REASON_COUNT];
+    private final RecentConfirmationRateWindow[] recentReliabilityTransitionRates =
+            new RecentConfirmationRateWindow[REASON_COUNT];
+
+    RouteReleaseOutcomeStats() {
+        for (int reason = 0; reason < REASON_COUNT; reason++) {
+            recentReliabilityTransitionRates[reason] = new RecentConfirmationRateWindow(
+                    RELIABILITY_TRANSITION_CONFIRMATION_RATE_WINDOW_SAMPLES);
+        }
+    }
 
     void record(String releaseReason, String outcome) {
         int reason = reasonIndex(releaseReason);
@@ -183,17 +193,14 @@ final class RouteReleaseOutcomeStats {
     int reliabilityTransitionConfirmationRateSampleCount(String releaseReason) {
         int reason = reasonIndex(releaseReason);
         if (reason < 0) return 0;
-        return reliabilityTransitionConfirmationRateSampleCountForCounts(
-                confirmedTransitionReliabilityChanges[reason],
-                revertedTransitionReliabilityChanges[reason]);
+        return recentReliabilityTransitionRates[reason].sampleCount();
     }
 
     int reliabilityTransitionConfirmationRatePercent(String releaseReason) {
         int reason = reasonIndex(releaseReason);
         if (reason < 0) return -1;
-        return reliabilityTransitionConfirmationRatePercentForCounts(
-                confirmedTransitionReliabilityChanges[reason],
-                revertedTransitionReliabilityChanges[reason]);
+        return recentReliabilityTransitionRates[reason].confirmationRatePercent(
+                MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES);
     }
 
     static int reliabilityTransitionConfirmationRateSampleCountForCounts(
@@ -243,6 +250,7 @@ final class RouteReleaseOutcomeStats {
             canceledTransitionReliabilityChanges[reason] = 0;
             revertedTransitionReliabilityChanges[reason] = 0;
             supersededTransitionReliabilityChanges[reason] = 0;
+            recentReliabilityTransitionRates[reason].clear();
             for (int sample = 0; sample < REVERSAL_RATE_WINDOW_SAMPLES; sample++) {
                 recentDirectionalOutcomes[reason][sample] = OUTCOME_STABLE;
             }
@@ -308,15 +316,13 @@ final class RouteReleaseOutcomeStats {
                                     .append('/').append(supersededTransitionReliabilityChanges[reason]);
                         }
                         int reliabilityTransitionSamples =
-                                reliabilityTransitionConfirmationRateSampleCountForCounts(
-                                        confirmedTransitionReliabilityChanges[reason],
-                                        revertedTransitionReliabilityChanges[reason]);
+                                recentReliabilityTransitionRates[reason].sampleCount();
                         if (reliabilityTransitionSamples
                                 >= MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES) {
                             out.append(" rconf")
-                                    .append(reliabilityTransitionConfirmationRatePercentForCounts(
-                                            confirmedTransitionReliabilityChanges[reason],
-                                            revertedTransitionReliabilityChanges[reason]))
+                                    .append(recentReliabilityTransitionRates[reason]
+                                            .confirmationRatePercent(
+                                                    MIN_RELIABILITY_TRANSITION_CONFIRMATION_RATE_SAMPLES))
                                     .append("%@").append(reliabilityTransitionSamples);
                         }
                     }
@@ -458,6 +464,7 @@ final class RouteReleaseOutcomeStats {
         if (confirmedTransitionReliabilityChanges[reason] < Integer.MAX_VALUE) {
             confirmedTransitionReliabilityChanges[reason]++;
         }
+        recentReliabilityTransitionRates[reason].recordConfirmed();
     }
 
     private void incrementRevertedTransitionReliabilityChange(int reason) {
@@ -467,6 +474,7 @@ final class RouteReleaseOutcomeStats {
         if (revertedTransitionReliabilityChanges[reason] < Integer.MAX_VALUE) {
             revertedTransitionReliabilityChanges[reason]++;
         }
+        recentReliabilityTransitionRates[reason].recordReverted();
     }
 
     private void incrementSupersededTransitionReliabilityChange(int reason) {
