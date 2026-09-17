@@ -522,74 +522,56 @@ final class RealtimeTranscriptionClient {
         long now = System.currentTimeMillis();
         int activeFlapScore = RealtimeRoutingPolicy.activeRouteFlapScore(
                 routeFlapScore, lastPerformanceRouteDecisionAtMs, now);
-        StringBuilder out = new StringBuilder("route why ").append(lastRouteDecisionReason)
-                .append(" • n ").append(realtimeRouteLatencySamples)
-                .append('/').append(fileRouteLatencySamples);
         boolean releaseFresh = RealtimeRoutingPolicy.isRouteFlapHistoryFresh(
                 lastRouteFlapReleaseAtMs, now);
-        if (!"-".equals(lastRouteFlapReleaseReason) && releaseFresh) {
-            out.append(" • release ").append(lastRouteFlapReleaseReason)
-                    .append(' ').append(lastRouteFlapReleaseOutcome);
-            if ("pending".equals(lastRouteFlapReleaseOutcome)) {
-                out.append('×').append(lastRouteFlapReleaseStableStreak)
-                        .append('/').append(RealtimeRoutingPolicy.ROUTE_FLAP_STABLE_CONFIRM_TURNS);
-            }
-        }
         String releaseBreakdown = routeFlapReleaseOutcomeStats.diagnostics();
-        if (!releaseBreakdown.isEmpty()) {
-            out.append(" • ").append(releaseBreakdown);
-        }
         boolean routeHistoryFresh = RealtimeRoutingPolicy.isRouteFlapHistoryFresh(
                 lastPerformanceRouteDecisionAtMs, now);
         String routeHistory = routeHistoryFresh
                 ? RealtimeRoutingPolicy.performanceRouteHistoryLabel(
                         previousPerformanceRoute, lastPerformanceRoute)
                 : "-";
-        if (!"-".equals(routeHistory)) {
-            out.append(" • hist ").append(routeHistory);
-            if (stablePerformanceRouteStreak > 0) {
-                out.append(" • stable×").append(stablePerformanceRouteStreak)
-                        .append('/').append(RealtimeRoutingPolicy.ROUTE_FLAP_STABLE_CONFIRM_TURNS);
-            }
+        boolean latencyReady = realtimeRouteLatencySamples >= RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES
+                && fileRouteLatencySamples >= RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES;
+        long riskGapMs = Long.MIN_VALUE;
+        long requiredMarginMs = Long.MAX_VALUE;
+        long guardDurationMs = 0L;
+        long guardRemainingMs = 0L;
+        if (latencyReady) {
+            riskGapMs = RealtimeRoutingPolicy.routeLatencyRiskGapMs(
+                    realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
+                    fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs);
+            requiredMarginMs = RealtimeRoutingPolicy.routeLatencySwitchMarginMs(
+                    realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
+                    realtimeRouteLatencySampleAtMs, fileRouteLatencyJitterMs,
+                    fileRouteLatencySamples, fileRouteLatencySampleAtMs, now, activeFlapScore);
+            guardDurationMs = RealtimeRoutingPolicy.adaptiveRouteLatencySwitchGuardMs(
+                    realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
+                    fileRouteLatencyJitterMs, fileRouteLatencySamples);
+            guardRemainingMs = RealtimeRoutingPolicy.routeLatencySwitchGuardRemainingMs(
+                    realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
+                    realtimeRouteLatencySampleAtMs, fileRouteLatencyJitterMs,
+                    fileRouteLatencySamples, fileRouteLatencySampleAtMs, now);
         }
-        if (activeFlapScore > 0) {
-            out.append(" • flap×").append(activeFlapScore)
-                    .append(" +").append(
-                            RealtimeRoutingPolicy.routeFlapExtraMarginMs(activeFlapScore))
-                    .append("ms");
-        }
-        if (realtimeRouteLatencySamples < RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES
-                || fileRouteLatencySamples < RealtimeRoutingPolicy.MIN_ROUTE_LATENCY_SAMPLES) {
-            return out.toString();
-        }
-
-        long riskGapMs = RealtimeRoutingPolicy.routeLatencyRiskGapMs(
-                realtimeRouteLatencyEstimateMs, realtimeRouteLatencyJitterMs,
-                fileRouteLatencyEstimateMs, fileRouteLatencyJitterMs);
-        long requiredMarginMs = RealtimeRoutingPolicy.routeLatencySwitchMarginMs(
-                realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
-                realtimeRouteLatencySampleAtMs, fileRouteLatencyJitterMs,
-                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now, activeFlapScore);
-        long guardDurationMs = RealtimeRoutingPolicy.adaptiveRouteLatencySwitchGuardMs(
-                realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
-                fileRouteLatencyJitterMs, fileRouteLatencySamples);
-        long guardRemainingMs = RealtimeRoutingPolicy.routeLatencySwitchGuardRemainingMs(
-                realtimeRouteLatencyJitterMs, realtimeRouteLatencySamples,
-                realtimeRouteLatencySampleAtMs, fileRouteLatencyJitterMs,
-                fileRouteLatencySamples, fileRouteLatencySampleAtMs, now);
-        if (riskGapMs != Long.MIN_VALUE) {
-            out.append(" • gap ").append(riskGapMs).append("ms");
-        }
-        if (requiredMarginMs != Long.MAX_VALUE) {
-            out.append(" / need ").append(requiredMarginMs).append("ms");
-        }
-        out.append(" • guard ");
-        if (guardRemainingMs > 0L) {
-            out.append(guardRemainingMs).append('/').append(guardDurationMs).append("ms");
-        } else {
-            out.append("off/").append(guardDurationMs).append("ms");
-        }
-        return out.toString();
+        return new RouteDecisionDiagnosticsSnapshot(
+                lastRouteDecisionReason,
+                realtimeRouteLatencySamples,
+                fileRouteLatencySamples,
+                releaseFresh,
+                lastRouteFlapReleaseReason,
+                lastRouteFlapReleaseOutcome,
+                lastRouteFlapReleaseStableStreak,
+                RealtimeRoutingPolicy.ROUTE_FLAP_STABLE_CONFIRM_TURNS,
+                releaseBreakdown,
+                routeHistory,
+                stablePerformanceRouteStreak,
+                activeFlapScore,
+                RealtimeRoutingPolicy.routeFlapExtraMarginMs(activeFlapScore),
+                latencyReady,
+                riskGapMs,
+                requiredMarginMs,
+                guardRemainingMs,
+                guardDurationMs).format();
     }
 
     synchronized void noteRealtimeTranscriptOutcome(boolean acceptedUseful, boolean fileRecovery,
