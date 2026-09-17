@@ -178,7 +178,10 @@ final class RouteDecisionDiagnosticsSnapshot {
 
     private static String boundedStatsContent(String value, int charBudget) {
         if (!hasReleaseBreakdown(value) || charBudget <= 0) return "";
-        if (value.length() <= charBudget) return value;
+        String normalizedValue = normalizedDiagnosticText(value);
+        if (normalizedValue.isEmpty()) return "";
+        if (normalizedValue.length() <= charBudget) return normalizedValue;
+        value = normalizedValue;
 
         String reasonAware = reasonAwareStatsContent(value, charBudget);
         if (reasonAware != null) return reasonAware;
@@ -445,7 +448,7 @@ final class RouteDecisionDiagnosticsSnapshot {
             seen[reason] = true;
             selected[i] = true;
             if (includeCounts && i + 1 < tokens.length
-                    && statsReasonIndex(tokens[i + 1]) < 0) {
+                    && isReasonCountValue(tokens[i + 1])) {
                 selected[i + 1] = true;
             }
         }
@@ -475,18 +478,54 @@ final class RouteDecisionDiagnosticsSnapshot {
             return false;
         }
         if (statsReasonIndex(tokens[index]) >= 0) return false;
+        if (isUnknownReasonBoundary(tokens, index)) return false;
         if (!includeCounts && isReasonCountToken(tokens, index)) return false;
         return reasonBefore(tokens, index) >= 0;
     }
 
     private static boolean isReasonCountToken(String[] tokens, int index) {
-        return index > 0 && statsReasonIndex(tokens[index - 1]) >= 0;
+        return index > 0
+                && statsReasonIndex(tokens[index - 1]) >= 0
+                && isReasonCountValue(tokens[index]);
+    }
+
+    private static boolean isReasonCountValue(String token) {
+        if (token == null || token.isEmpty()) return false;
+        int separators = 0;
+        boolean hasDigit = false;
+        for (int i = 0; i < token.length(); i++) {
+            char value = token.charAt(i);
+            if (value == '/') {
+                if (!hasDigit || separators >= 2) return false;
+                separators++;
+                hasDigit = false;
+            } else if (Character.isDigit(value)) {
+                hasDigit = true;
+            } else {
+                return false;
+            }
+        }
+        return separators == 2 && hasDigit;
+    }
+
+    private static boolean isUnknownReasonBoundary(String[] tokens, int index) {
+        if (index < 0 || index + 1 >= tokens.length) return false;
+        String token = tokens[index];
+        if (statsReasonIndex(token) >= 0
+                || "rel".equals(token)
+                || "s/r/x".equals(token)
+                || token.indexOf('=') >= 0
+                || token.indexOf('/') >= 0) {
+            return false;
+        }
+        return isReasonCountValue(tokens[index + 1]);
     }
 
     private static int reasonBefore(String[] tokens, int index) {
         for (int i = index - 1; i >= 0; i--) {
             int reason = statsReasonIndex(tokens[i]);
             if (reason >= 0) return reason;
+            if (isUnknownReasonBoundary(tokens, i)) return -1;
         }
         return -1;
     }
@@ -530,7 +569,7 @@ final class RouteDecisionDiagnosticsSnapshot {
             seen[reason] = true;
             appendToken(out, tokens[i]);
             if (includeCounts && i + 1 < tokens.length
-                    && statsReasonIndex(tokens[i + 1]) < 0) {
+                    && isReasonCountValue(tokens[i + 1])) {
                 appendToken(out, tokens[i + 1]);
             }
         }
@@ -561,9 +600,28 @@ final class RouteDecisionDiagnosticsSnapshot {
 
     private static String[] diagnosticTokens(String value) {
         if (!hasReleaseBreakdown(value)) return new String[0];
-        String trimmed = value.trim();
-        if (trimmed.isEmpty()) return new String[0];
-        return trimmed.split("\\s+");
+        int tokenCount = diagnosticTokenCount(value);
+        String[] tokens = new String[tokenCount];
+        int tokenIndex = 0;
+        int tokenStart = -1;
+        for (int i = 0; i <= value.length(); i++) {
+            boolean boundary = i == value.length()
+                    || isDiagnosticWhitespace(value.charAt(i));
+            if (!boundary && tokenStart < 0) {
+                tokenStart = i;
+            } else if (boundary && tokenStart >= 0) {
+                tokens[tokenIndex++] = value.substring(tokenStart, i);
+                tokenStart = -1;
+            }
+        }
+        return tokens;
+    }
+
+    private static String normalizedDiagnosticText(String value) {
+        String[] tokens = diagnosticTokens(value);
+        StringBuilder out = new StringBuilder();
+        for (String token : tokens) appendToken(out, token);
+        return out.toString();
     }
 
     private static void appendToken(StringBuilder out, String token) {
@@ -580,7 +638,7 @@ final class RouteDecisionDiagnosticsSnapshot {
         int count = 0;
         boolean inToken = false;
         for (int i = 0; i < value.length(); i++) {
-            boolean whitespace = Character.isWhitespace(value.charAt(i));
+            boolean whitespace = isDiagnosticWhitespace(value.charAt(i));
             if (!whitespace && !inToken) {
                 count++;
                 inToken = true;
@@ -591,9 +649,13 @@ final class RouteDecisionDiagnosticsSnapshot {
         return count;
     }
 
+    private static boolean isDiagnosticWhitespace(char value) {
+        return Character.isWhitespace(value) || Character.isSpaceChar(value);
+    }
+
     private static int lastWhitespaceBoundary(String value, int atOrBefore) {
         for (int i = Math.min(atOrBefore, value.length() - 1); i >= 0; i--) {
-            if (Character.isWhitespace(value.charAt(i))) return i;
+            if (isDiagnosticWhitespace(value.charAt(i))) return i;
         }
         return -1;
     }
@@ -640,7 +702,11 @@ final class RouteDecisionDiagnosticsSnapshot {
     }
 
     private static boolean hasReleaseBreakdown(String value) {
-        return value != null && !value.isEmpty();
+        if (value == null || value.isEmpty()) return false;
+        for (int i = 0; i < value.length(); i++) {
+            if (!isDiagnosticWhitespace(value.charAt(i))) return true;
+        }
+        return false;
     }
 
     private static boolean isKnown(String value) {
