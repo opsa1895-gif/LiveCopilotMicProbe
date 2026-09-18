@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 132
-        versionName = "1.31.0-stats-reason-cardinality-boundary-matrix"
+        versionCode = 133
+        versionName = "1.32.0-omission-marker-activation-plateau-matrix"
     }
 
     compileOptions {
