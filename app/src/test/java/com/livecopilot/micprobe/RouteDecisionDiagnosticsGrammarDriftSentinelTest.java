@@ -6,7 +6,6 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
@@ -29,9 +28,9 @@ public class RouteDecisionDiagnosticsGrammarDriftSentinelTest {
     private static final String RICH_GRAMMAR_SEQUENCE = "srsrsrsrssrsssr";
 
     private static final Pattern DIRECT_DETAIL_APPEND = Pattern.compile(
-            "\\\\.append\\\\(\\\\\" ([A-Za-z][A-Za-z0-9]*)(?:=)?");
+            "\\.append\\(\" ([A-Za-z][A-Za-z0-9]*)(?:=)?");
     private static final Pattern SPACED_DETAIL_APPEND = Pattern.compile(
-            "\\\\.append\\\\(' '\\\\)\\\\s*\\\\.append\\\\(\\\\\"([A-Za-z][A-Za-z0-9]*)(?:=)?");
+            "\\.append\\(' '\\)\\s*\\.append\\(\"([A-Za-z][A-Za-z0-9]*)(?:=)?");
 
     @Test
     public void producerDetailFamiliesRequireExplicitClosedWorldClassification() throws Exception {
