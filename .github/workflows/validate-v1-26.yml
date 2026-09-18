@@ -38,3 +38,5 @@ jobs:
 
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
+
+# validation retry
