@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 122
-        versionName = "1.21.0-producer-grammar-coverage-contracts"
+        versionCode = 123
+        versionName = "1.22.0-producer-grammar-drift-sentinel"
     }
 
     compileOptions {
