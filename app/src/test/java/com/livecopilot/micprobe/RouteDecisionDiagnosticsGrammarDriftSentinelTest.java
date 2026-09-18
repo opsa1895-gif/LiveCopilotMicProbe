@@ -24,6 +24,15 @@ public class RouteDecisionDiagnosticsGrammarDriftSentinelTest {
             "sig", "rev", "conf", "rconf");
     private static final Set<String> SECONDARY_FAMILIES = Set.of(
             "sup", "tr", "cancel", "rtr", "rcancel", "rmat");
+    private static final String[] EXPECTED_RELEASE_REASONS = {
+            "rt-slowdown", "rt-speedup", "file-speedup", "file-slowdown"
+    };
+    private static final String[] EXPECTED_REASON_LABELS = {
+            "rtslow", "rtfast", "ffast", "fslow"
+    };
+    private static final String[] EXPECTED_OUTCOMES = {
+            "stable", "reversal", "expired", "superseded"
+    };
     private static final Set<String> REASON_LABELS = Set.of(
             "rtslow", "rtfast", "ffast", "fslow");
     private static final String RICH_GRAMMAR_SEQUENCE = "srsrsrsrssrsssr";
@@ -32,6 +41,12 @@ public class RouteDecisionDiagnosticsGrammarDriftSentinelTest {
             "\\.append\\(\" ([A-Za-z][A-Za-z0-9]*)(?:=)?");
     private static final Pattern SPACED_DETAIL_APPEND = Pattern.compile(
             "\\.append\\(' '\\)\\s*\\.append\\(\"([A-Za-z][A-Za-z0-9]*)(?:=)?");
+    private static final Pattern REASON_INPUT_MAPPING = Pattern.compile(
+            "if \\(\"([^\"]+)\"\\.equals\\(reason\\)\\) return REASON_[A-Z_]+;");
+    private static final Pattern REASON_LABEL_MAPPING = Pattern.compile(
+            "if \\(reason == REASON_[A-Z_]+\\) return \"([^\"]+)\";");
+    private static final Pattern OUTCOME_INPUT_MAPPING = Pattern.compile(
+            "if \\(\"([^\"]+)\"\\.equals\\(outcome\\)\\) return OUTCOME_[A-Z_]+;");
 
     @Test
     public void producerDetailFamiliesRequireExplicitClosedWorldClassification() throws Exception {
@@ -77,6 +92,67 @@ public class RouteDecisionDiagnosticsGrammarDriftSentinelTest {
                 emitted);
     }
 
+    @Test
+    public void producerReleaseReasonInputsStayClosedWorldAndOrdered() throws Exception {
+        assertArrayEquals(
+                EXPECTED_RELEASE_REASONS,
+                mappedValuesFromProducerMethod("private static int reasonIndex(String reason) {",
+                        REASON_INPUT_MAPPING));
+    }
+
+    @Test
+    public void producerReasonLabelsStayClosedWorldAndOrdered() throws Exception {
+        assertArrayEquals(
+                EXPECTED_REASON_LABELS,
+                mappedValuesFromProducerMethod("private static String reasonLabel(int reason) {",
+                        REASON_LABEL_MAPPING));
+    }
+
+    @Test
+    public void producerOutcomeInputsStayClosedWorldAndOrdered() throws Exception {
+        assertArrayEquals(
+                EXPECTED_OUTCOMES,
+                mappedValuesFromProducerMethod("private static int outcomeIndex(String outcome) {",
+                        OUTCOME_INPUT_MAPPING));
+    }
+
+    @Test
+    public void formatterReasonLabelsStayExplicitAndOrdered() throws Exception {
+        Field field = RouteDecisionDiagnosticsSnapshot.class
+                .getDeclaredField("STATS_REASON_LABELS");
+        field.setAccessible(true);
+        String[] actual = (String[]) field.get(null);
+
+        assertArrayEquals(EXPECTED_REASON_LABELS, actual);
+    }
+
+    @Test
+    public void producerHeaderAndCountTripleStayStableAcrossEveryReason() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        for (String reason : EXPECTED_RELEASE_REASONS) {
+            record(stats, reason, "stable", 2);
+            record(stats, reason, "reversal", 3);
+            record(stats, reason, "expired", 4);
+            record(stats, reason, "superseded", 5);
+        }
+
+        String diagnostics = stats.diagnostics();
+        String[] tokens = diagnostics.split(" +");
+
+        assertEquals("rel", tokens[0]);
+        assertEquals("s/r/x", tokens[1]);
+
+        int previousReasonIndex = 1;
+        for (String label : EXPECTED_REASON_LABELS) {
+            int reasonIndex = tokenIndex(tokens, label);
+            assertTrue("reason order drifted for " + label + ": " + diagnostics,
+                    reasonIndex > previousReasonIndex);
+            assertEquals("2/3/4", tokens[reasonIndex + 1]);
+            assertEquals("sup=5", tokens[reasonIndex + 2]);
+            previousReasonIndex = reasonIndex;
+        }
+    }
+
     private static Set<String> classifiedFamilies() {
         Set<String> classified = new TreeSet<>();
         classified.addAll(PRIORITY_FAMILIES);
@@ -89,12 +165,24 @@ public class RouteDecisionDiagnosticsGrammarDriftSentinelTest {
     }
 
     private static Set<String> producerDetailFamiliesFromSource() throws IOException {
-        String source = new String(Files.readAllBytes(findProducerSource()), StandardCharsets.UTF_8);
-        String diagnostics = diagnosticsMethodSource(source);
+        String diagnostics = diagnosticsMethodSource(producerSource());
         Set<String> families = new TreeSet<>();
         collectFamilies(DIRECT_DETAIL_APPEND, diagnostics, families);
         collectFamilies(SPACED_DETAIL_APPEND, diagnostics, families);
         return families;
+    }
+
+    private static String[] mappedValuesFromProducerMethod(
+            String signature, Pattern pattern) throws IOException {
+        String method = methodSource(producerSource(), signature);
+        java.util.ArrayList<String> values = new java.util.ArrayList<>();
+        Matcher matcher = pattern.matcher(method);
+        while (matcher.find()) values.add(matcher.group(1));
+        return values.toArray(new String[0]);
+    }
+
+    private static String producerSource() throws IOException {
+        return new String(Files.readAllBytes(findProducerSource()), StandardCharsets.UTF_8);
     }
 
     private static void collectFamilies(
@@ -106,9 +194,12 @@ public class RouteDecisionDiagnosticsGrammarDriftSentinelTest {
     }
 
     private static String diagnosticsMethodSource(String source) {
-        String signature = "String diagnostics() {";
+        return methodSource(source, "String diagnostics() {");
+    }
+
+    private static String methodSource(String source, String signature) {
         int signatureStart = source.indexOf(signature);
-        assertTrue("cannot locate RouteReleaseOutcomeStats.diagnostics()", signatureStart >= 0);
+        assertTrue("cannot locate producer method: " + signature, signatureStart >= 0);
 
         int openBrace = source.indexOf('{', signatureStart);
         int depth = 0;
@@ -123,7 +214,7 @@ public class RouteDecisionDiagnosticsGrammarDriftSentinelTest {
                 }
             }
         }
-        throw new AssertionError("cannot find end of RouteReleaseOutcomeStats.diagnostics()");
+        throw new AssertionError("cannot find end of producer method: " + signature);
     }
 
     private static Path findProducerSource() {
@@ -186,6 +277,18 @@ public class RouteDecisionDiagnosticsGrammarDriftSentinelTest {
             }
         }
         return separators == 2 && hasDigit;
+    }
+
+    private static void record(
+            RouteReleaseOutcomeStats stats, String reason, String outcome, int count) {
+        for (int i = 0; i < count; i++) stats.record(reason, outcome);
+    }
+
+    private static int tokenIndex(String[] tokens, String expected) {
+        for (int i = 0; i < tokens.length; i++) {
+            if (expected.equals(tokens[i])) return i;
+        }
+        return -1;
     }
 
     private static String normalizeFamily(String prefix) {
