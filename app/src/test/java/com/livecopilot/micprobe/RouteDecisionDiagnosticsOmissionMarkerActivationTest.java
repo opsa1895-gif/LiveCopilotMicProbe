@@ -116,18 +116,24 @@ public class RouteDecisionDiagnosticsOmissionMarkerActivationTest {
                                     + " single-digit marker moved the whole-snapshot boundary",
                             expectedBoundary,
                             boundary);
+                    String expectedNormal = expectedNormalAtReserveBoundary(
+                            sectionMask, reasonMask, hidden, boundary);
+                    int expectedLength = RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET
+                            - statsSection(reasonMask, hidden).length()
+                            + normalBoundaryStatsSection(reasonMask, hidden).length();
+
                     assertEquals(
                             context + " hidden=" + hidden
-                                    + " exact boundary must remain normal",
-                            expectedNormal(sectionMask, reasonMask, hidden, boundary),
+                                    + " exact reserve boundary must remain normal",
+                            expectedNormal,
                             atBoundary);
                     assertEquals(
                             context + " hidden=" + hidden
-                                    + " exact boundary must consume hard ceiling",
-                            RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET,
+                                    + " normal rendering slack drifted",
+                            expectedLength,
                             atBoundary.length());
 
-                    assertStatsIdentity(
+                    assertNormalBoundaryStatsIdentity(
                             atBoundary, reasonMask, hidden,
                             context + " hidden=" + hidden);
                     assertGuardIdentity(
@@ -278,6 +284,16 @@ public class RouteDecisionDiagnosticsOmissionMarkerActivationTest {
                 + ((sectionMask & LATENCY) != 0 ? LATENCY_SECTION : "");
     }
 
+    private static String expectedNormalAtReserveBoundary(
+            int sectionMask, int reasonMask, int hidden, int decisionLength) {
+        return rawCore(decisionLength)
+                + ((sectionMask & RELEASE) != 0 ? RELEASE_SECTION : "")
+                + normalBoundaryStatsSection(reasonMask, hidden)
+                + ((sectionMask & HISTORY) != 0 ? HISTORY_SECTION : "")
+                + ((sectionMask & FLAP) != 0 ? FLAP_SECTION : "")
+                + ((sectionMask & LATENCY) != 0 ? LATENCY_SECTION : "");
+    }
+
     private static String expectedOverflow(
             int sectionMask, int reasonMask, int hidden, int decisionLength) {
         String stats = statsSection(reasonMask, hidden);
@@ -322,6 +338,12 @@ public class RouteDecisionDiagnosticsOmissionMarkerActivationTest {
         return out.append('}').toString();
     }
 
+    private static String normalBoundaryStatsSection(int reasonMask, int hidden) {
+        String reserve = statsSection(reasonMask, hidden);
+        String raw = " • stats{" + source(reasonMask, hidden) + "}";
+        return raw.length() <= reserve.length() ? raw : reserve;
+    }
+
     private static String reasonLabels(int reasonMask) {
         StringBuilder out = new StringBuilder();
         for (int reason = 0; reason < REASON_LABELS.length; reason++) {
@@ -330,6 +352,27 @@ public class RouteDecisionDiagnosticsOmissionMarkerActivationTest {
             out.append(REASON_LABELS[reason]);
         }
         return out.toString();
+    }
+
+    private static void assertNormalBoundaryStatsIdentity(
+            String rendered, int reasonMask, int hidden, String context) {
+        String stats = extractStats(rendered);
+        assertEquals(
+                context + " normal-boundary stats rendering drifted",
+                normalBoundaryStatsSection(reasonMask, hidden),
+                stats);
+
+        if (hidden == 1 || hidden == 2) {
+            assertFalse(context + " marker appeared before raw tokens stopped fitting",
+                    stats.contains("…more"));
+            for (int i = 0; i < hidden; i++) {
+                assertTrue(context + " missing raw hidden token x" + i,
+                        stats.contains("x" + i));
+            }
+        } else if (hidden >= 3) {
+            assertTrue(context + " marker missing once raw hidden tokens exceed reserve",
+                    stats.contains("…more+" + hidden));
+        }
     }
 
     private static void assertStatsIdentity(
