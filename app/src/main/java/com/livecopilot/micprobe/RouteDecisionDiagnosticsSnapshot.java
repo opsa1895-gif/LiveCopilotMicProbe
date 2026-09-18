@@ -207,6 +207,18 @@ final class RouteDecisionDiagnosticsSnapshot {
         String[] tokens = diagnosticTokens(value);
         if (uniqueReasonCount(tokens) < 2) return null;
 
+        String standard = standardReasonAwareStatsContent(tokens, charBudget);
+        String pendingFair = pendingPriorityFairSummary(tokens, charBudget);
+        if (pendingFair != null
+                && pendingPriorityTokenCount(pendingFair)
+                > pendingPriorityTokenCount(standard)) {
+            return pendingFair;
+        }
+        return standard;
+    }
+
+    private static String standardReasonAwareStatsContent(
+            String[] tokens, int charBudget) {
         String candidate = prioritizedReasonSummary(
                 tokens, true, true, true, charBudget);
         if (candidate != null) return candidate;
@@ -232,6 +244,171 @@ final class RouteDecisionDiagnosticsSnapshot {
 
         String marker = omissionMarker(tokens.length);
         return marker.length() <= charBudget ? marker : null;
+    }
+
+    private static String pendingPriorityFairSummary(
+            String[] tokens, int charBudget) {
+        if (pendingPriorityTokenCount(tokens) < 2) return null;
+
+        String withHeader = pendingPriorityFairCandidate(tokens, true, charBudget);
+        String labelsOnly = pendingPriorityFairCandidate(tokens, false, charBudget);
+        return betterPendingFairSummary(withHeader, labelsOnly);
+    }
+
+    private static String pendingPriorityFairCandidate(
+            String[] tokens, boolean includeHeader, int charBudget) {
+        boolean[] selected = reasonBaseSelection(tokens, includeHeader, false);
+        String best = selectedSummaryWithOmission(tokens, selected, charBudget);
+        if (best == null) return null;
+
+        for (String prefix : STATS_DETAIL_PRIORITY_PREFIXES) {
+            int[] round = emptyReasonRound();
+            boolean hasRound = false;
+            boolean hasPending = false;
+            for (int reason = 0; reason < round.length; reason++) {
+                round[reason] = nextPriorityDetailIndexForPrefix(
+                        tokens, selected, false, reason, prefix);
+                if (round[reason] >= 0) {
+                    hasRound = true;
+                    if (isPendingPriorityToken(tokens[round[reason]])) {
+                        hasPending = true;
+                    }
+                    selected[round[reason]] = true;
+                }
+            }
+            if (!hasRound) continue;
+
+            String expanded = selectedSummaryWithOmission(tokens, selected, charBudget);
+            if (expanded != null) {
+                best = expanded;
+                continue;
+            }
+
+            for (int index : round) {
+                if (index >= 0) selected[index] = false;
+            }
+            if (!hasPending) return best;
+
+            String partial = bestPendingRoundSubset(
+                    tokens, selected, round, charBudget);
+            return partial != null ? partial : best;
+        }
+        return best;
+    }
+
+    private static String bestPendingRoundSubset(
+            String[] tokens, boolean[] selected, int[] round, int charBudget) {
+        int candidateCount = 0;
+        for (int index : round) {
+            if (index >= 0) candidateCount++;
+        }
+        if (candidateCount == 0) return null;
+
+        int[] candidateIndices = new int[candidateCount];
+        int cursor = 0;
+        for (int index : round) {
+            if (index >= 0) candidateIndices[cursor++] = index;
+        }
+
+        String bestText = null;
+        int bestCoverage = 0;
+        int bestPendingCoverage = 0;
+        int bestMask = Integer.MAX_VALUE;
+        for (int mask = 1; mask < (1 << candidateCount); mask++) {
+            int pendingCoverage = 0;
+            for (int bit = 0; bit < candidateCount; bit++) {
+                if ((mask & (1 << bit)) == 0) continue;
+                int index = candidateIndices[bit];
+                selected[index] = true;
+                if (isPendingPriorityToken(tokens[index])) pendingCoverage++;
+            }
+
+            String rendered = selectedSummaryWithOmission(tokens, selected, charBudget);
+            int coverage = Integer.bitCount(mask);
+            if (rendered != null
+                    && (coverage > bestCoverage
+                    || (coverage == bestCoverage && pendingCoverage > bestPendingCoverage)
+                    || (coverage == bestCoverage && pendingCoverage == bestPendingCoverage
+                    && (bestText == null || rendered.length() < bestText.length()))
+                    || (coverage == bestCoverage && pendingCoverage == bestPendingCoverage
+                    && bestText != null && rendered.length() == bestText.length()
+                    && mask < bestMask))) {
+                bestText = rendered;
+                bestCoverage = coverage;
+                bestPendingCoverage = pendingCoverage;
+                bestMask = mask;
+            }
+
+            for (int bit = 0; bit < candidateCount; bit++) {
+                if ((mask & (1 << bit)) != 0) {
+                    selected[candidateIndices[bit]] = false;
+                }
+            }
+        }
+        return bestText;
+    }
+
+    private static String betterPendingFairSummary(String current, String candidate) {
+        if (candidate == null) return current;
+        if (current == null) return candidate;
+
+        int candidatePending = pendingPriorityTokenCount(candidate);
+        int currentPending = pendingPriorityTokenCount(current);
+        if (candidatePending != currentPending) {
+            return candidatePending > currentPending ? candidate : current;
+        }
+
+        int candidatePriority = priorityDetailTokenCount(candidate);
+        int currentPriority = priorityDetailTokenCount(current);
+        if (candidatePriority != currentPriority) {
+            return candidatePriority > currentPriority ? candidate : current;
+        }
+
+        boolean candidateHeader = candidate.startsWith("rel s/r/x");
+        boolean currentHeader = current.startsWith("rel s/r/x");
+        if (candidateHeader != currentHeader) {
+            return candidateHeader ? candidate : current;
+        }
+
+        if (candidate.length() != current.length()) {
+            return candidate.length() < current.length() ? candidate : current;
+        }
+        return candidate.compareTo(current) < 0 ? candidate : current;
+    }
+
+    private static int pendingPriorityTokenCount(String value) {
+        return pendingPriorityTokenCount(diagnosticTokens(value));
+    }
+
+    private static int pendingPriorityTokenCount(String[] tokens) {
+        int count = 0;
+        if (tokens == null) return count;
+        for (String token : tokens) {
+            if (isPendingPriorityToken(token)) count++;
+        }
+        return count;
+    }
+
+    private static int priorityDetailTokenCount(String value) {
+        int count = 0;
+        for (String token : diagnosticTokens(value)) {
+            if (isPriorityDetailToken(token)) count++;
+        }
+        return count;
+    }
+
+    private static boolean isPendingPriorityToken(String token) {
+        return isPriorityDetailToken(token)
+                && token.indexOf('>') >= 0
+                && token.indexOf('×') >= 0;
+    }
+
+    private static boolean isPriorityDetailToken(String token) {
+        if (token == null) return false;
+        for (String prefix : STATS_DETAIL_PRIORITY_PREFIXES) {
+            if (token.startsWith(prefix)) return true;
+        }
+        return false;
     }
 
     private static String prioritizedReasonSummary(
