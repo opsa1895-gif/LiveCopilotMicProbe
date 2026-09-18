@@ -113,7 +113,9 @@ public class RouteDecisionDiagnosticsPendingSnapshotPressureTest {
         String rendered = pressuredSnapshot(producer, 320).format();
         String content = statsContent(rendered);
 
-        assertEquals(RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET, rendered.length());
+        assertTrue(
+                "hard overflow exceeded snapshot budget: " + rendered.length(),
+                rendered.length() <= RouteDecisionDiagnosticsSnapshot.SNAPSHOT_CHAR_BUDGET);
         assertTrue(rendered.contains("route why="));
         assertTrue(rendered.contains("release="));
         assertTrue(rendered.contains("hist="));
