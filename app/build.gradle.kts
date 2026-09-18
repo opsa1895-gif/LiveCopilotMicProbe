@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 133
-        versionName = "1.32.0-omission-marker-activation-plateau-matrix"
+        versionCode = 134
+        versionName = "1.33.0-omission-count-width-plateau-matrix"
     }
 
     compileOptions {
