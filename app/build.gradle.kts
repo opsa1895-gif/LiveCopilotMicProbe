@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 131
-        versionName = "1.30.0-dynamic-stats-reserve-boundary-matrix"
+        versionCode = 132
+        versionName = "1.31.0-stats-reason-cardinality-boundary-matrix"
     }
 
     compileOptions {
