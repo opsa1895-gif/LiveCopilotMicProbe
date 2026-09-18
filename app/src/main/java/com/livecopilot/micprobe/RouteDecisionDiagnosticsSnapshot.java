@@ -186,10 +186,16 @@ final class RouteDecisionDiagnosticsSnapshot {
         String reasonAware = reasonAwareStatsContent(value, charBudget);
         if (reasonAware != null) return reasonAware;
 
-        int totalTokens = diagnosticTokenCount(value);
+        String[] tokens = diagnosticTokens(value);
+        int totalTokens = tokens.length;
         String widestMarker = omissionMarker(totalTokens);
         int suffixLength = widestMarker.length() + 1;
         if (charBudget < STATS_MIN_VISIBLE_PREFIX_CHARS + suffixLength) {
+            if (uniqueReasonCount(tokens) == 1) {
+                String labelsOnly = reasonSummary(tokens, false, false);
+                String identity = summaryWithOmission(labelsOnly, totalTokens, charBudget);
+                if (identity != null) return identity;
+            }
             return widestMarker;
         }
 
