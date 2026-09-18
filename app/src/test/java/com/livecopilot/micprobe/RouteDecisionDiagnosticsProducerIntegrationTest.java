@@ -17,6 +17,8 @@ public class RouteDecisionDiagnosticsProducerIntegrationTest {
     };
     private static final String RICH_GRAMMAR_SEQUENCE = "srsrsrsrssrsssr";
     private static final String RCONF_BUDGET_EDGE_SEQUENCE = "rsrssrsrsssrssrsrrssr";
+    private static final String PENDING_SIGNAL_SEQUENCE = "sssrr";
+    private static final String PENDING_RELIABILITY_SEQUENCE = "ssrsrrsrs";
 
     @Test
     public void emptyProducerDoesNotCreateStatsSection() {
@@ -153,6 +155,58 @@ public class RouteDecisionDiagnosticsProducerIntegrationTest {
         assertFalse(content.contains("rcancel="));
         assertFalse(content.contains("rmat="));
         assertFalse(content.contains("rconf"));
+        assertExactOmissionCount(producer, content);
+    }
+
+    @Test
+    public void pendingSignalSubgrammarStaysAtomicUnderReasonAwareCompaction() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        recordDirectionalSequence(stats, "rt-slowdown", PENDING_SIGNAL_SEQUENCE);
+        stats.record("rt-speedup", "stable");
+        stats.record("file-speedup", "stable");
+        stats.record("file-slowdown", "stable");
+
+        String producer = stats.diagnostics();
+        String content = statsContent(snapshot(producer, false).format());
+
+        assertEquals(
+                "rel s/r/x rtslow 3/2/0 rev40%@5 sig=stable>mixed×1/2 "
+                        + "rtfast 1/0/0 sig=learn ffast 1/0/0 sig=learn "
+                        + "fslow 1/0/0 sig=learn",
+                producer);
+        assertEquals(
+                "rel s/r/x rtslow sig=stable>mixed×1/2 rtfast sig=learn "
+                        + "ffast sig=learn fslow sig=learn …more+5",
+                content);
+        assertDetailToken(producer, "sig=stable>mixed×1/2");
+        assertDetailToken(content, "sig=stable>mixed×1/2");
+        assertEquals(1, tokenCount(content, "sig=stable>mixed×1/2"));
+        assertTrue(content.length() <= RouteDecisionDiagnosticsSnapshot.RELEASE_STATS_CHAR_BUDGET);
+        assertExactOmissionCount(producer, content);
+    }
+
+    @Test
+    public void pendingReliabilitySubgrammarUsesOnePriorityTokenAndExactOmissionCount() {
+        RouteReleaseOutcomeStats stats = new RouteReleaseOutcomeStats();
+        recordDirectionalSequence(stats, "rt-slowdown", PENDING_RELIABILITY_SEQUENCE);
+        stats.record("file-speedup", "stable");
+
+        String producer = stats.diagnostics();
+        String content = statsContent(snapshot(producer, false).format());
+
+        assertEquals(
+                "rel s/r/x rtslow 5/4/0 rev50%@8 sig=risk tr=1/2 cancel=2/0 "
+                        + "conf33%@3/weak>mixed×1/2 ffast 1/0/0 sig=learn",
+                producer);
+        assertEquals(
+                "rel s/r/x rtslow 5/4/0 rev50%@8 sig=risk "
+                        + "conf33%@3/weak>mixed×1/2 ffast 1/0/0 sig=learn …more+2",
+                content);
+        assertDetailToken(producer, "conf33%@3/weak>mixed×1/2");
+        assertDetailToken(content, "conf33%@3/weak>mixed×1/2");
+        assertEquals(95, content.length());
+        assertFalse(content.contains("tr="));
+        assertFalse(content.contains("cancel="));
         assertExactOmissionCount(producer, content);
     }
 
