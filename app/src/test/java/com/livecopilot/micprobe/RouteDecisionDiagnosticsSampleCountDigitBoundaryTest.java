@@ -57,7 +57,7 @@ public class RouteDecisionDiagnosticsSampleCountDigitBoundaryTest {
     public void fileDigitGrowthMovesEveryBoundaryByExactlyOneCharacter() {
         for (int mask = 0; mask < COMBINATION_COUNT; mask++) {
             for (int[] transition : DIGIT_TRANSITIONS) {
-                assertSingleCounterBoundary(mask, 7, transition[0], transition[1], false);
+                assertSingleCounterBoundary(mask, transition[0], transition[1], 7, false);
             }
         }
     }
@@ -116,7 +116,7 @@ public class RouteDecisionDiagnosticsSampleCountDigitBoundaryTest {
                 assertOverflowBudgetStability(
                         mask, transition[0], transition[1], 7, true);
                 assertOverflowBudgetStability(
-                        mask, 7, transition[0], transition[1], false);
+                        mask, transition[0], transition[1], 7, false);
             }
         }
     }
