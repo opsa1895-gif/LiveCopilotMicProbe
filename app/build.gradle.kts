@@ -10,8 +10,8 @@ android {
         applicationId = "com.livecopilot.micprobe"
         minSdk = 29
         targetSdk = 36
-        versionCode = 125
-        versionName = "1.24.0-pending-transition-subgrammar-contracts"
+        versionCode = 126
+        versionName = "1.25.0-multi-reason-pending-fairness"
     }
 
     compileOptions {
