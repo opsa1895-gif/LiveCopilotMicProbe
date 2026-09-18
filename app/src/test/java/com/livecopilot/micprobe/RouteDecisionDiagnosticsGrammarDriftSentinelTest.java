@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
@@ -88,7 +89,7 @@ public class RouteDecisionDiagnosticsGrammarDriftSentinelTest {
     }
 
     private static Set<String> producerDetailFamiliesFromSource() throws IOException {
-        String source = Files.readString(findProducerSource());
+        String source = new String(Files.readAllBytes(findProducerSource()), StandardCharsets.UTF_8);
         String diagnostics = diagnosticsMethodSource(source);
         Set<String> families = new TreeSet<>();
         collectFamilies(DIRECT_DETAIL_APPEND, diagnostics, families);
